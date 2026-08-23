@@ -1,0 +1,10 @@
+{
+  "name": "legacy-router-page-opener",
+  "version": "1.0.0",
+  "description": "Local TLS-bypass reverse proxy for legacy TE Data / Huawei / ZTE router admin pages",
+  "main": "index.mjs",
+  "type": "module",
+  "scripts": {
+    "start": "node index.mjs"
+  }
+}
