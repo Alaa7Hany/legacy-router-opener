@@ -3,7 +3,7 @@
 > **A local TLS-bypass reverse proxy & mobile app for archaic TE Data, Huawei (HG531 V1 / HG532n), and ZTE (ZXHN) router administration dashboards.**
 
 Available as:
-* 💻 **Desktop / Windows Proxy** (Node.js 1-click batch launcher)
+* 💻 **Desktop App** (Standalone ~7.6 MB Go binary — zero Node.js or runtime dependencies + built-in `/_bridge` Web Control Launchpad)
 * 📱 **Android App** (Standalone Jetpack Compose + Embedded Proxy & In-App WebView)
 
 ---
@@ -57,19 +57,22 @@ The Android app provides a 100% mobile, standalone solution. It runs an embedded
 
 ## 💻 Desktop Quick Start (Windows / Mac / Linux)
 
-### Prerequisites
-- **Node.js** (v18 or higher) installed on your machine.
-- Laptop connected to the router via **Wi-Fi** or **Ethernet cable**.
+### Option A: Standalone Executable (Zero Dependencies — Recommended)
+1. Download `legacy-router-opener.exe` (or double-click `start.bat`). **No Node.js, Python, or Go installation required.**
+2. Your browser will automatically open the dark-mode **Control Launchpad** at:
+   👉 **`http://localhost:8080/_bridge`**
+3. Confirm or edit your Router/Device `IP:Port`, pick a hardware preset if desired (*Huawei/ZTE*, *Dell iDRAC*, *HPE iLO*, *APC UPS*, *Cisco/HP Switch*), and click **Apply & Open Device Dashboard** (opens `http://localhost:8080/`).
+4. If a router gets stuck with `"Duplicated Login"` or `"SessionExhaustedError"`, click **Reset Stuck Session & Cache** right inside the Launchpad.
 
-### Steps
-1. **Option A (Double-Click on Windows):** Double-click `start.bat`.
-2. **Option B (Command Line):**
-   ```bash
-   npm start
-   ```
-3. Open your browser and navigate to:
-   👉 **`http://localhost:8080`**
-4. Log in with your router credentials (e.g. `admin` / `admin` or password printed on the router label).
+### Option B: Build / Run From Source (Developers)
+- **Go 1.24+:**
+  ```bash
+  go test -v ./...
+  go build -ldflags="-s -w" -o legacy-router-opener.exe .
+  ./legacy-router-opener.exe
+  ```
+- **CLI Flags:** `-target 192.168.1.1:443`, `-preset huawei-zte`, `-port 8080`, `-open-router`, `-no-browser`
+- **Legacy Node.js fallback script:** `node --openssl-legacy-provider index.mjs` is also preserved in the repository.
 
 ---
 
