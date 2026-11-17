@@ -4,13 +4,39 @@ import crypto from 'node:crypto';
 import zlib from 'node:zlib';
 import { URL } from 'node:url';
 
-const rawRouterArg = (process.argv[2] || process.env.ROUTER_IP || '192.168.1.1')
-  .trim()
+const rawInput = (process.argv[2] || process.env.ROUTER_IP || '192.168.1.1').trim();
+const hasExplicitHttp = /^http:\/\//i.test(rawInput);
+const hasExplicitHttps = /^https:\/\//i.test(rawInput);
+const rawRouterArg = rawInput
   .replace(/^https?:\/\//i, '')
-  .replace(/\/.*$/, '');
-const colonIdx = rawRouterArg.lastIndexOf(':');
-const ROUTER_IP = colonIdx > 0 ? rawRouterArg.slice(0, colonIdx) : rawRouterArg || '192.168.1.1';
-const ROUTER_PORT = colonIdx > 0 ? parseInt(rawRouterArg.slice(colonIdx + 1), 10) || 443 : 443;
+  .replace(/\/.*$/, '')
+  .trim();
+
+let parsedHost = rawRouterArg;
+let parsedPort = NaN;
+if (rawRouterArg.startsWith('[')) {
+  const closeBracketIdx = rawRouterArg.indexOf(']');
+  if (closeBracketIdx > 0) {
+    const afterBracket = rawRouterArg.slice(closeBracketIdx + 1);
+    if (afterBracket.startsWith(':') && /^\d+$/.test(afterBracket.slice(1))) {
+      parsedHost = rawRouterArg.slice(0, closeBracketIdx + 1);
+      parsedPort = parseInt(afterBracket.slice(1), 10);
+    }
+  }
+} else {
+  const colonIdx = rawRouterArg.lastIndexOf(':');
+  if (colonIdx > 0 && /^\d+$/.test(rawRouterArg.slice(colonIdx + 1))) {
+    parsedHost = rawRouterArg.slice(0, colonIdx).trim();
+    parsedPort = parseInt(rawRouterArg.slice(colonIdx + 1), 10);
+  }
+}
+
+const hasValidCustomPort = Number.isInteger(parsedPort) && parsedPort >= 1 && parsedPort <= 65535;
+const ROUTER_IP = (hasValidCustomPort ? parsedHost : rawRouterArg) || '192.168.1.1';
+const HAS_EXPLICIT_PORT_OR_SCHEME = hasExplicitHttp || hasExplicitHttps || hasValidCustomPort;
+
+let usePlainHttp = hasExplicitHttp || (hasValidCustomPort && parsedPort === 80 && !hasExplicitHttps);
+let activeRouterPort = hasValidCustomPort ? parsedPort : (usePlainHttp ? 80 : 443);
 const DEFAULT_PROXY_PORT = parseInt(process.env.PROXY_PORT || '8080', 10);
 let activeProxyPort = DEFAULT_PROXY_PORT;
 
@@ -23,6 +49,15 @@ const HUAWEI_INITIAL_COOKIES = [
 
 function escapeRegExp(str) {
   return String(str).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function isConnectionRefusedError(err) {
+  if (!err) return false;
+  if (err.code === 'ECONNREFUSED') return true;
+  if (Array.isArray(err.errors)) {
+    return err.errors.some((e) => e && e.code === 'ECONNREFUSED');
+  }
+  return /ECONNREFUSED/i.test(err.message || '');
 }
 
 // OpenSSL legacy flags
@@ -43,6 +78,21 @@ const httpsAgent = new https.Agent({
   maxSockets: 4,
   timeout: 10000,
 });
+
+const httpAgent = new http.Agent({
+  keepAlive: true,
+  maxSockets: 4,
+  timeout: 10000,
+});
+
+function getRouterScheme(plainHttp = usePlainHttp) {
+  return plainHttp ? 'http' : 'https';
+}
+
+function getRouterAuthority(plainHttp = usePlainHttp, port = activeRouterPort) {
+  const isDefaultPort = (plainHttp && port === 80) || (!plainHttp && port === 443);
+  return isDefaultPort ? ROUTER_IP : `${ROUTER_IP}:${port}`;
+}
 
 // In-memory Cookie Jar pre-seeded with Huawei menu/language defaults
 const cookieJar = new Map(HUAWEI_INITIAL_COOKIES);
@@ -90,17 +140,23 @@ function saveCookiesFromResponse(setCookieHeaders) {
 function fetchFromRouter(targetUrl, method, incomingHeaders, reqBody, retries = 2) {
   return new Promise((resolve, reject) => {
     const parsed = new URL(targetUrl);
-    const routerAuthority = ROUTER_PORT === 443 ? ROUTER_IP : `${ROUTER_IP}:${ROUTER_PORT}`;
+    const requestUsePlainHttp = parsed.protocol === 'http:';
+    const requestPort = parsed.port ? parseInt(parsed.port, 10) : (requestUsePlainHttp ? 80 : 443);
+    const scheme = getRouterScheme(requestUsePlainHttp);
+    const routerAuthority = getRouterAuthority(requestUsePlainHttp, requestPort);
     const incomingReferer = incomingHeaders.referer || '';
     const rewrittenReferer = incomingReferer
-      ? incomingReferer.replace(/https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?/gi, `https://${routerAuthority}`)
-      : `https://${routerAuthority}/`;
+      ? incomingReferer.replace(
+          /https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?/gi,
+          `${scheme}://${routerAuthority}`
+        )
+      : `${scheme}://${routerAuthority}/`;
 
     const headers = {
       ...incomingHeaders,
-      host: parsed.host,
+      host: routerAuthority,
       referer: rewrittenReferer,
-      origin: `https://${routerAuthority}`,
+      origin: `${scheme}://${routerAuthority}`,
       'accept-encoding': 'identity',
     };
     delete headers['connection'];
@@ -122,19 +178,26 @@ function fetchFromRouter(targetUrl, method, incomingHeaders, reqBody, retries = 
     }
 
     const options = {
-      protocol: 'https:',
-      hostname: ROUTER_IP,
-      port: ROUTER_PORT,
+      protocol: `${scheme}:`,
+      hostname: ROUTER_IP.replace(/^\[|\]$/g, ''),
+      port: requestPort,
       path: parsed.pathname + parsed.search,
       method: method,
       headers: headers,
-      agent: httpsAgent,
+      agent: requestUsePlainHttp ? httpAgent : httpsAgent,
+      insecureHTTPParser: true,
       timeout: 10000,
     };
 
-    console.log(`[Proxy 📡] ${options.method} https://${options.hostname}:${options.port}${options.path}`);
+    console.log(`[Proxy 📡] ${options.method} ${scheme}://${ROUTER_IP}:${options.port}${options.path}`);
 
-    const req = https.request(options, (res) => {
+    const transport = requestUsePlainHttp ? http : https;
+    const req = transport.request(options, (res) => {
+      if (!HAS_EXPLICIT_PORT_OR_SCHEME && requestUsePlainHttp && requestPort === 80 && !usePlainHttp) {
+        usePlainHttp = true;
+        activeRouterPort = 80;
+      }
+
       // Save any session cookies returned by the router
       if (res.headers['set-cookie']) {
         saveCookiesFromResponse(res.headers['set-cookie']);
@@ -174,6 +237,22 @@ function fetchFromRouter(targetUrl, method, incomingHeaders, reqBody, retries = 
     });
 
     req.on('error', (err) => {
+      if (
+        isConnectionRefusedError(err) &&
+        !HAS_EXPLICIT_PORT_OR_SCHEME &&
+        !requestUsePlainHttp &&
+        requestPort === 443
+      ) {
+        console.warn(
+          `[Proxy 🔄 Fallback] HTTPS on ${ROUTER_IP}:443 refused connection (ECONNREFUSED); falling back to plain HTTP on port 80...`
+        );
+        const fallbackUrl = `http://${getRouterAuthority(true, 80)}${parsed.pathname}${parsed.search}`;
+        fetchFromRouter(fallbackUrl, method, incomingHeaders, reqBody, retries)
+          .then(resolve)
+          .catch(reject);
+        return;
+      }
+
       const isRetryable =
         err.code === 'ECONNRESET' ||
         err.code === 'ETIMEDOUT' ||
@@ -207,8 +286,8 @@ const server = http.createServer(async (clientReq, clientRes) => {
     const clientBody = Buffer.concat(clientChunks);
 
     try {
-      const routerAuthority = ROUTER_PORT === 443 ? ROUTER_IP : `${ROUTER_IP}:${ROUTER_PORT}`;
-      const targetUrl = `https://${routerAuthority}${clientReq.url}`;
+      const requestPath = clientReq.url.startsWith('/') ? clientReq.url : `/${clientReq.url}`;
+      const targetUrl = `${getRouterScheme()}://${getRouterAuthority()}${requestPath}`;
       const routerRes = await fetchFromRouter(
         targetUrl,
         clientReq.method,
@@ -273,7 +352,8 @@ const server = http.createServer(async (clientReq, clientRes) => {
         clientRes.end(routerRes.buffer);
       }
     } catch (err) {
-      console.error(`[Proxy ❌ Error]`, err.message);
+      const errorMsg = err.message || err.code || String(err);
+      console.error(`[Proxy ❌ Error]`, errorMsg);
       clientRes.writeHead(502, {
         'Content-Type': 'text/html; charset=utf-8',
         'X-Legacy-Router-Proxy': '1',
@@ -281,7 +361,7 @@ const server = http.createServer(async (clientReq, clientRes) => {
       clientRes.end(`
         <div style="font-family: sans-serif; padding: 2rem; max-width: 500px; margin: 40px auto; border: 1px solid #f87171; border-radius: 8px; background: #fef2f2;">
           <h3 style="color: #b91c1c; margin-top:0;">Router Connection Error</h3>
-          <p>${err.message}</p>
+          <p>${errorMsg}</p>
           <button onclick="location.reload()" style="padding: 6px 12px; background: #2563eb; color: #fff; border: none; border-radius: 4px; cursor: pointer;">Retry</button>
         </div>
       `);
@@ -359,8 +439,8 @@ async function startServerWithFallback() {
       const addr = server.address();
       activeProxyPort = typeof addr === 'object' && addr ? addr.port : candidatePort;
       console.log(`\n======================================================`);
-      console.log(`🚀 TE Data Router Proxy with Active Session Cookie Jar!`);
-      console.log(`🎯 Target Router: https://${ROUTER_IP}:${ROUTER_PORT}`);
+      console.log(`🚀 Legacy Router & Hardware Proxy with Active Session Cookie Jar!`);
+      console.log(`🎯 Target Router: ${getRouterScheme()}://${ROUTER_IP}:${activeRouterPort}${HAS_EXPLICIT_PORT_OR_SCHEME ? '' : ' (auto-fallback to HTTP :80 if refused)'}`);
       console.log(`👉 Open: http://localhost:${activeProxyPort}`);
       console.log(`🍪 Server-side session management active`);
       console.log(`======================================================\n`);

@@ -13,11 +13,13 @@ import java.io.EOFException
 import java.io.IOException
 import java.io.InputStream
 import java.io.OutputStream
+import java.net.ConnectException
 import java.net.InetSocketAddress
 import java.net.Socket
 import java.net.SocketException
 import java.net.SocketTimeoutException
 import java.net.UnknownHostException
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Semaphore
 import java.util.zip.GZIPInputStream
 import java.util.zip.InflaterInputStream
@@ -42,7 +44,12 @@ class DirectRouterHttpClient : RouterHttpClient {
         private val PROXY_AUTHORITY_REGEX = Regex("""https?://(127\.0\.0\.1|localhost)(:\d+)?""", RegexOption.IGNORE_CASE)
     }
 
-    private data class Endpoint(val host: String, val port: Int, val useTls: Boolean) {
+    private data class Endpoint(
+        val host: String,
+        val port: Int,
+        val useTls: Boolean,
+        val explicitPortOrScheme: Boolean = false
+    ) {
         val scheme: String get() = if (useTls) "https" else "http"
         val authority: String
             get() {
@@ -54,19 +61,63 @@ class DirectRouterHttpClient : RouterHttpClient {
     // Fair FIFO semaphore to prevent flooding the router's small MIPS CPU with parallel RSA TLS handshakes
     private val connectionSemaphore = Semaphore(MAX_CONCURRENT_REQUESTS, true)
 
+    // Remembers hosts where default HTTPS (443) refused connection and fell back to plain HTTP (80)
+    private val httpFallbackHosts = ConcurrentHashMap<String, Boolean>()
+
     override fun sendRequest(
         routerIp: String,
         request: RouterRequest,
         cookieHeader: String?
     ): RouterResponse {
-        val endpoint = parseEndpoint(routerIp)
+        var endpoint = parseEndpoint(routerIp)
+        var fellBackToHttp = false
         var lastError: Exception? = null
 
         for (attempt in 0..MAX_RETRIES) {
             try {
                 connectionSemaphore.acquire()
                 try {
-                    return executeSingleRequest(endpoint, request, cookieHeader)
+                    val response = executeSingleRequest(endpoint, request, cookieHeader)
+                    if (fellBackToHttp) {
+                        httpFallbackHosts[endpoint.host] = true
+                    }
+                    return response
+                } catch (e: Exception) {
+                    if (shouldFallbackToHttp(endpoint, e)) {
+                        Log.w(
+                            TAG,
+                            "🔄 HTTPS port $DEFAULT_HTTPS_PORT refused connection on ${endpoint.host}; falling back to plain HTTP on port $DEFAULT_HTTP_PORT"
+                        )
+                        fellBackToHttp = true
+                        endpoint = Endpoint(
+                            host = endpoint.host,
+                            port = DEFAULT_HTTP_PORT,
+                            useTls = false,
+                            explicitPortOrScheme = true
+                        )
+                        val response = executeSingleRequest(endpoint, request, cookieHeader)
+                        httpFallbackHosts[endpoint.host] = true
+                        return response
+                    }
+                    if (!endpoint.explicitPortOrScheme &&
+                        !endpoint.useTls &&
+                        endpoint.port == DEFAULT_HTTP_PORT &&
+                        isConnectionRefused(e)
+                    ) {
+                        httpFallbackHosts.remove(endpoint.host)
+                        Log.w(
+                            TAG,
+                            "🔄 Cached HTTP port $DEFAULT_HTTP_PORT refused connection on ${endpoint.host}; retrying HTTPS on port $DEFAULT_HTTPS_PORT"
+                        )
+                        endpoint = Endpoint(
+                            host = endpoint.host,
+                            port = DEFAULT_HTTPS_PORT,
+                            useTls = true,
+                            explicitPortOrScheme = false
+                        )
+                        return executeSingleRequest(endpoint, request, cookieHeader)
+                    }
+                    throw e
                 } finally {
                     connectionSemaphore.release()
                 }
@@ -103,8 +154,7 @@ class DirectRouterHttpClient : RouterHttpClient {
         val hasHttpScheme = raw.startsWith("http://", ignoreCase = true)
         val hasHttpsScheme = raw.startsWith("https://", ignoreCase = true)
         val cleaned = raw
-            .removePrefix("https://")
-            .removePrefix("http://")
+            .replace(Regex("^https?://", RegexOption.IGNORE_CASE), "")
             .substringBefore('/')
             .trim()
 
@@ -120,6 +170,17 @@ class DirectRouterHttpClient : RouterHttpClient {
         }
 
         val finalHost = host.ifEmpty { "192.168.1.1" }
+        val explicitPortOrScheme = hasHttpScheme || hasHttpsScheme || port != null
+
+        if (!explicitPortOrScheme && httpFallbackHosts[finalHost] == true) {
+            return Endpoint(
+                host = finalHost,
+                port = DEFAULT_HTTP_PORT,
+                useTls = false,
+                explicitPortOrScheme = false
+            )
+        }
+
         val finalPort = port ?: if (hasHttpScheme) DEFAULT_HTTP_PORT else DEFAULT_HTTPS_PORT
         val useTls = when {
             hasHttpScheme -> false
@@ -127,10 +188,29 @@ class DirectRouterHttpClient : RouterHttpClient {
             finalPort == DEFAULT_HTTP_PORT -> false
             else -> true
         }
-        return Endpoint(finalHost, finalPort, useTls)
+        return Endpoint(finalHost, finalPort, useTls, explicitPortOrScheme)
+    }
+
+    private fun isConnectionRefused(error: Throwable): Boolean {
+        return generateSequence(error) { it.cause }.any { t ->
+            t is ConnectException ||
+                (t is SocketException && (
+                    t.message?.contains("Connection refused", ignoreCase = true) == true ||
+                        t.message?.contains("ECONNREFUSED", ignoreCase = true) == true
+                    ))
+        }
+    }
+
+    private fun shouldFallbackToHttp(endpoint: Endpoint, error: Throwable): Boolean {
+        if (endpoint.explicitPortOrScheme || !endpoint.useTls || endpoint.port != DEFAULT_HTTPS_PORT) {
+            return false
+        }
+        return isConnectionRefused(error)
     }
 
     private fun isRetryable(error: Throwable): Boolean {
+        if (isConnectionRefused(error)) return false
+
         return generateSequence(error) { it.cause }.any { t ->
             t is SocketException ||
                 t is SocketTimeoutException ||
