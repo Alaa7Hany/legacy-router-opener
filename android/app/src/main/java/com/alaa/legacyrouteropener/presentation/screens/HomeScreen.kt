@@ -31,7 +31,7 @@ import com.alaa.legacyrouteropener.ui.theme.*
 fun HomeScreen(
     state: ProxyState,
     onRouterIpChange: (String) -> Unit,
-    onStartProxy: () -> Unit,
+    onStartProxy: () -> Int?,
     onStopProxy: () -> Unit,
     onClearLogs: () -> Unit
 ) {
@@ -129,7 +129,8 @@ fun HomeScreen(
                     OutlinedTextField(
                         value = state.routerIp,
                         onValueChange = onRouterIpChange,
-                        label = { Text("Router IP Gateway") },
+                        label = { Text("Router IP / Host (optional :port)") },
+                        placeholder = { Text("192.168.1.1 or 192.168.1.1:443") },
                         leadingIcon = {
                             Icon(Icons.Default.Language, contentDescription = null)
                         },
@@ -149,9 +150,13 @@ fun HomeScreen(
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 Button(
                     onClick = {
-                        if (!state.isRunning) onStartProxy()
+                        val activePort = if (!state.isRunning) {
+                            onStartProxy() ?: return@Button
+                        } else {
+                            state.proxyPort
+                        }
                         val intent = Intent(context, WebViewActivity::class.java).apply {
-                            putExtra("URL", "http://127.0.0.1:${state.proxyPort}")
+                            putExtra("URL", "http://127.0.0.1:$activePort")
                         }
                         context.startActivity(intent)
                     },
@@ -176,10 +181,14 @@ fun HomeScreen(
                 ) {
                     OutlinedButton(
                         onClick = {
-                            if (!state.isRunning) onStartProxy()
+                            val activePort = if (!state.isRunning) {
+                                onStartProxy() ?: return@OutlinedButton
+                            } else {
+                                state.proxyPort
+                            }
                             val browserIntent = Intent(
                                 Intent.ACTION_VIEW,
-                                Uri.parse("http://127.0.0.1:${state.proxyPort}")
+                                Uri.parse("http://127.0.0.1:$activePort")
                             )
                             context.startActivity(browserIntent)
                         },
@@ -271,8 +280,8 @@ fun HomeScreen(
                                 items(state.logs) { logLine ->
                                     val logColor = when {
                                         logLine.contains("❌") || logLine.contains("Error") -> AccentRed
-                                        logLine.contains("🍪") || logLine.contains("Cookie") -> AccentOrange
-                                        logLine.contains("🔄") || logLine.contains("Redirect") -> Cyan80
+                                        logLine.contains("🍪") || logLine.contains("Cookie") || logLine.contains("⚠️") -> AccentOrange
+                                        logLine.contains("🔄") || logLine.contains("Redirect") || logLine.contains("⚡") -> Cyan80
                                         logLine.contains("📤") -> AccentGreen
                                         else -> Color(0xFFE2E8F0)
                                     }

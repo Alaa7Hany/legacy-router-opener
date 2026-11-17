@@ -4,6 +4,7 @@ import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import com.alaa.legacyrouteropener.data.model.ProxyState
 import com.alaa.legacyrouteropener.data.network.DirectRouterHttpClient
+import com.alaa.legacyrouteropener.data.repository.SessionCookieJar
 import com.alaa.legacyrouteropener.domain.server.ProxyServer
 import com.alaa.legacyrouteropener.domain.util.GatewayDetector
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -14,14 +15,71 @@ import java.io.IOException
 
 class MainViewModel(application: Application) : AndroidViewModel(application) {
 
+    companion object {
+        private const val DEFAULT_PROXY_PORT = 8080
+        private const val MAX_PORT_ATTEMPTS = 10
+    }
+
+    /**
+     * Process-scoped runtime holder so the embedded NanoHTTPD proxy and session cookies
+     * survive Activity recreation or backgrounding while WebViewActivity or Chrome is active.
+     */
+    private object ProxyRuntime {
+        val httpClient = DirectRouterHttpClient()
+        val cookieJar = SessionCookieJar()
+        val logs = mutableListOf<String>()
+
+        @Volatile
+        var proxyServer: ProxyServer? = null
+
+        @Volatile
+        var logListener: ((List<String>) -> Unit)? = null
+
+        @Synchronized
+        fun appendLog(message: String) {
+            logs.add(message)
+            while (logs.size > 200) {
+                logs.removeAt(0)
+            }
+            val snapshot = logs.toList()
+            logListener?.invoke(snapshot)
+        }
+
+        @Synchronized
+        fun clearLogs() {
+            logs.clear()
+            logListener?.invoke(emptyList())
+        }
+
+        @Synchronized
+        fun getLogsSnapshot(): List<String> = logs.toList()
+    }
+
     private val _state = MutableStateFlow(ProxyState())
     val state: StateFlow<ProxyState> = _state.asStateFlow()
 
-    private var proxyServer: ProxyServer? = null
-    private val httpClient = DirectRouterHttpClient()
-
     init {
-        detectNetwork()
+        ProxyRuntime.logListener = { snapshot ->
+            _state.update { it.copy(logs = snapshot) }
+        }
+
+        val activeServer = ProxyRuntime.proxyServer
+        if (activeServer != null && activeServer.isAlive) {
+            val context = getApplication<Application>()
+            val ssid = GatewayDetector.getConnectedWifiSsid(context)
+            _state.update {
+                it.copy(
+                    isRunning = true,
+                    routerIp = activeServer.routerIp,
+                    proxyPort = activeServer.proxyPort,
+                    wifiSsid = ssid,
+                    logs = ProxyRuntime.getLogsSnapshot()
+                )
+            }
+        } else {
+            _state.update { it.copy(logs = ProxyRuntime.getLogsSnapshot()) }
+            detectNetwork()
+        }
     }
 
     fun detectNetwork() {
@@ -40,53 +98,88 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun updateRouterIp(ip: String) {
         _state.update { it.copy(routerIp = ip) }
-        proxyServer?.routerIp = ip
+        val sanitized = sanitizeRouterEndpoint(ip)
+        ProxyRuntime.proxyServer?.routerIp = sanitized
     }
 
-    fun startProxy() {
+    fun startProxy(): Int? {
         val currentState = _state.value
-        try {
-            proxyServer?.stop()
-            proxyServer = ProxyServer(
-                proxyHost = "127.0.0.1",
-                proxyPort = currentState.proxyPort,
-                routerIp = currentState.routerIp,
-                httpClient = httpClient,
-                onLog = { addLog(it) }
-            ).apply {
-                start()
+        val targetEndpoint = sanitizeRouterEndpoint(currentState.routerIp)
+        ProxyRuntime.proxyServer?.stop()
+        ProxyRuntime.proxyServer = null
+
+        var lastError: IOException? = null
+        for (offset in 0 until MAX_PORT_ATTEMPTS) {
+            val candidatePort = DEFAULT_PROXY_PORT + offset
+            try {
+                val server = ProxyServer(
+                    proxyHost = "127.0.0.1",
+                    proxyPort = candidatePort,
+                    routerIp = targetEndpoint,
+                    httpClient = ProxyRuntime.httpClient,
+                    cookieJar = ProxyRuntime.cookieJar,
+                    onLog = { ProxyRuntime.appendLog(it) }
+                ).apply {
+                    start()
+                }
+                ProxyRuntime.proxyServer = server
+
+                _state.update {
+                    it.copy(
+                        isRunning = true,
+                        routerIp = targetEndpoint,
+                        proxyPort = candidatePort
+                    )
+                }
+                if (offset > 0) {
+                    addLog("⚠️ Port $DEFAULT_PROXY_PORT was in use; fell back to port $candidatePort")
+                }
+                addLog("🚀 Proxy active on http://127.0.0.1:$candidatePort")
+                addLog("🎯 Target Router: $targetEndpoint")
+                return candidatePort
+            } catch (e: IOException) {
+                lastError = e
+                if (offset == 0) {
+                    addLog("⚠️ Port $candidatePort unavailable (${e.message}), trying fallback ports...")
+                }
             }
-
-            _state.update { it.copy(isRunning = true) }
-            addLog("🚀 Proxy active on http://127.0.0.1:${currentState.proxyPort}")
-            addLog("🎯 Target Router: https://${currentState.routerIp}:443")
-
-        } catch (e: IOException) {
-            addLog("❌ Failed to start proxy: ${e.message}")
-            _state.update { it.copy(isRunning = false) }
         }
+
+        addLog("❌ Failed to start proxy: ${lastError?.message ?: "No ports available"}")
+        _state.update { it.copy(isRunning = false) }
+        return null
     }
 
     fun stopProxy() {
-        proxyServer?.stop()
-        proxyServer = null
-        _state.update { it.copy(isRunning = false) }
+        ProxyRuntime.proxyServer?.stop()
+        ProxyRuntime.proxyServer = null
+        ProxyRuntime.cookieJar.clear()
+        _state.update { it.copy(isRunning = false, proxyPort = DEFAULT_PROXY_PORT) }
         addLog("⏹️ Proxy stopped.")
     }
 
     fun clearLogs() {
-        _state.update { it.copy(logs = emptyList()) }
+        ProxyRuntime.clearLogs()
+    }
+
+    private fun sanitizeRouterEndpoint(raw: String): String {
+        val trimmed = raw.trim()
+        if (trimmed.isEmpty()) return "192.168.1.1"
+        val isHttp = trimmed.startsWith("http://", ignoreCase = true)
+        val body = trimmed
+            .replace(Regex("^https?://", RegexOption.IGNORE_CASE), "")
+            .substringBefore('/')
+            .trim()
+            .ifEmpty { "192.168.1.1" }
+        return if (isHttp) "http://$body" else body
     }
 
     private fun addLog(message: String) {
-        _state.update { current ->
-            val updatedLogs = (current.logs + message).takeLast(200)
-            current.copy(logs = updatedLogs)
-        }
+        ProxyRuntime.appendLog(message)
     }
 
     override fun onCleared() {
-        proxyServer?.stop()
+        ProxyRuntime.logListener = null
         super.onCleared()
     }
 }

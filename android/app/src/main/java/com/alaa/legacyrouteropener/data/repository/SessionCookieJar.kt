@@ -4,7 +4,19 @@ import java.util.concurrent.ConcurrentHashMap
 
 class SessionCookieJar {
 
-    private val cookies = ConcurrentHashMap<String, String>()
+    companion object {
+        val HUAWEI_INITIAL_COOKIES = mapOf(
+            "FirstMenu" to "Admin_0",
+            "SecondMenu" to "Admin_0_0",
+            "ThirdMenu" to "Admin_0_0_0",
+            "Language" to "en"
+        )
+        private val MAX_AGE_ZERO_REGEX = Regex(""";\s*max-age\s*=\s*0\b""", RegexOption.IGNORE_CASE)
+    }
+
+    private val cookies = ConcurrentHashMap<String, String>().apply {
+        putAll(HUAWEI_INITIAL_COOKIES)
+    }
 
     fun saveCookiesFromHeaders(setCookieHeaders: List<String>?) {
         if (setCookieHeaders.isNullOrEmpty()) return
@@ -15,7 +27,12 @@ class SessionCookieJar {
             if (eqIndex > 0) {
                 val key = mainPart.substring(0, eqIndex).trim()
                 val value = mainPart.substring(eqIndex + 1).trim()
-                if (key.isNotEmpty() && value.isNotEmpty()) {
+                if (key.isEmpty()) continue
+
+                val isExpired = MAX_AGE_ZERO_REGEX.containsMatchIn(header)
+                if (isExpired || value.isEmpty() || value.equals("deleted", ignoreCase = true)) {
+                    cookies.remove(key)
+                } else {
                     cookies[key] = value
                 }
             }
@@ -23,7 +40,7 @@ class SessionCookieJar {
     }
 
     fun getMergedCookieHeader(incomingBrowserCookies: String?): String {
-        val merged = mutableMapOf<String, String>()
+        val merged = LinkedHashMap<String, String>()
         merged.putAll(cookies)
 
         if (!incomingBrowserCookies.isNullOrBlank()) {
@@ -44,5 +61,6 @@ class SessionCookieJar {
 
     fun clear() {
         cookies.clear()
+        cookies.putAll(HUAWEI_INITIAL_COOKIES)
     }
 }
