@@ -167,7 +167,7 @@ func (s *Server) UpdateTarget(rawTarget string, presetID string) error {
 	s.mu.Unlock()
 
 	s.client.SetMaxSockets(maxSock)
-	s.appendLog(fmt.Sprintf("🎯 Target updated: %s (Preset: %s, Max Sockets: %d)", newEndpoint.URL(), presetName, maxSock))
+	s.appendLog(fmt.Sprintf("[TARGET] %s (Preset: %s, Max Sockets: %d)", newEndpoint.URL(), presetName, maxSock))
 	return nil
 }
 
@@ -272,7 +272,7 @@ func (s *Server) handleBridge(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case (r.URL.Path == "/_bridge" || r.URL.Path == "/_bridge/") && r.Method == http.MethodGet:
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		_, _ = io.WriteString(w, bridgePageHTML)
+		_, _ = io.WriteString(w, RenderBridgeHTML(s.Snapshot()))
 
 	case r.URL.Path == "/_bridge/api/ping" && r.Method == http.MethodGet:
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "proxy": "legacy-router-opener"})
@@ -306,7 +306,7 @@ func (s *Server) handleBridge(w http.ResponseWriter, r *http.Request) {
 			w.Header().Add("Set-Cookie", fmt.Sprintf("%s=; Path=/; Max-Age=0", key))
 		}
 		w.Header().Set("Clear-Site-Data", `"cookies"`)
-		s.appendLog("🧹 Cleared session cookies, browser auth state, and static asset cache")
+		s.appendLog("[RESET] Cleared session cookies, browser auth state, and static cache")
 		writeJSON(w, http.StatusOK, s.Snapshot())
 
 	case r.URL.Path == "/_bridge/api/detect-gateway" && r.Method == http.MethodPost:
@@ -314,7 +314,7 @@ func (s *Server) handleBridge(w http.ResponseWriter, r *http.Request) {
 		s.mu.Lock()
 		s.detectedGateway = gw
 		s.mu.Unlock()
-		s.appendLog(fmt.Sprintf("🔍 Auto-detected LAN Gateway: %s", gw))
+		s.appendLog(fmt.Sprintf("[GATEWAY] Auto-detected LAN gateway: %s", gw))
 		writeJSON(w, http.StatusOK, map[string]string{"gateway": gw})
 
 	case r.URL.Path == "/_bridge/api/logs/clear" && r.Method == http.MethodPost:
@@ -402,7 +402,7 @@ func (s *Server) handleProxy(w http.ResponseWriter, r *http.Request) {
 		cached, hit := s.staticCache[cacheKey]
 		s.mu.RUnlock()
 		if hit {
-			s.appendLog(fmt.Sprintf("⚡ [Cache Hit] %s (%dB)", r.URL.Path, len(cached.body)))
+			s.appendLog(fmt.Sprintf("[CACHE] %s (%dB)", r.URL.Path, len(cached.body)))
 			w.Header().Set("Content-Type", cached.mimeType)
 			w.Header().Set("Content-Length", strconv.Itoa(len(cached.body)))
 			w.Header().Set("Cache-Control", "public, max-age=3600")
@@ -413,13 +413,13 @@ func (s *Server) handleProxy(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	s.appendLog(fmt.Sprintf("📥 [%s] %s", r.Method, targetPath))
+	s.appendLog(fmt.Sprintf("[%s] %s", r.Method, targetPath))
 
 	var reqBody []byte
 	if r.Body != nil {
 		bodyBytes, err := io.ReadAll(io.LimitReader(r.Body, maxRequestBodyBytes))
 		if err != nil {
-			s.appendLog(fmt.Sprintf("❌ Request read error: %v", err))
+			s.appendLog(fmt.Sprintf("[ERR] Request read error: %v", err))
 			http.Error(w, "Failed to read request body", http.StatusBadRequest)
 			return
 		}
@@ -429,7 +429,7 @@ func (s *Server) handleProxy(w http.ResponseWriter, r *http.Request) {
 	jar := s.activeJar()
 	mergedCookies := jar.GetMergedCookieHeader(r.Header.Get("Cookie"))
 
-	s.appendLog(fmt.Sprintf("📡 [Forward] -> %s%s", target, targetPath))
+	s.appendLog(fmt.Sprintf("[FWD] -> %s%s", target, targetPath))
 	resp, usedEndpoint, err := s.client.SendRequest(r.Context(), target, preset, UpstreamRequest{
 		Method:  r.Method,
 		Path:    targetPath,
@@ -437,7 +437,7 @@ func (s *Server) handleProxy(w http.ResponseWriter, r *http.Request) {
 		Body:    reqBody,
 	}, mergedCookies)
 	if err != nil {
-		s.appendLog(fmt.Sprintf("❌ Router Error: %v", err))
+		s.appendLog(fmt.Sprintf("[ERR] Router connection failed: %v", err))
 		htmlErr := RenderErrorHTML(target, err.Error())
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.Header().Set("Content-Length", strconv.Itoa(len(htmlErr)))
@@ -450,7 +450,7 @@ func (s *Server) handleProxy(w http.ResponseWriter, r *http.Request) {
 	setCookies := resp.Headers.Values("Set-Cookie")
 	if len(setCookies) > 0 {
 		if saved := jar.SaveCookiesFromHeaders(setCookies); len(saved) > 0 {
-			s.appendLog(fmt.Sprintf("🍪 Saved session cookies (%s)", strings.Join(saved, "; ")))
+			s.appendLog(fmt.Sprintf("[COOKIE] Saved: %s", strings.Join(saved, "; ")))
 		}
 	}
 
@@ -483,7 +483,7 @@ func (s *Server) handleProxy(w http.ResponseWriter, r *http.Request) {
 			}
 			rewrittenLoc := RewriteRedirectLocation(loc, usedEndpoint.Host, proxyPort, effectiveProxyHost, preset.RewriteSingleLabelHost)
 			outHeaders.Set("Location", rewrittenLoc)
-			s.appendLog(fmt.Sprintf("🔄 Redirect: %s -> %s", loc, rewrittenLoc))
+			s.appendLog(fmt.Sprintf("[REDIRECT] %s -> %s", loc, rewrittenLoc))
 			continue
 		}
 		if strippedResponseHeaders[lower] || (isStatic && staticCacheStrippedHeaders[lower]) {
@@ -511,7 +511,7 @@ func (s *Server) handleProxy(w http.ResponseWriter, r *http.Request) {
 	outHeaders.Set("Content-Length", strconv.Itoa(len(finalBytes)))
 	outHeaders.Set("X-Legacy-Router-Proxy", "1")
 
-	s.appendLog(fmt.Sprintf("📤 [Response] %d (%s)", resp.StatusCode, computedMime))
+	s.appendLog(fmt.Sprintf("[%d] %s", resp.StatusCode, computedMime))
 	w.WriteHeader(resp.StatusCode)
 	if r.Method != http.MethodHead && len(finalBytes) > 0 {
 		_, _ = w.Write(finalBytes)

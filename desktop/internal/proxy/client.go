@@ -164,6 +164,7 @@ type Client struct {
 
 	mu                sync.RWMutex
 	httpFallbackHosts map[string]bool
+	legacyTLSHosts    map[string]bool
 	lastTLS           TLSInfo
 }
 
@@ -173,6 +174,7 @@ func NewClient(maxSockets int, onLog func(string)) *Client {
 		limiter:           NewSlotLimiter(maxSockets),
 		onLog:             onLog,
 		httpFallbackHosts: make(map[string]bool),
+		legacyTLSHosts:    make(map[string]bool),
 		lastTLS: TLSInfo{
 			Transport: "Idle",
 			Protocol:  "—",
@@ -197,10 +199,11 @@ func (c *Client) LastTLSInfo() TLSInfo {
 	return c.lastTLS
 }
 
-// ResetState clears remembered per-host HTTP fallback entries and resets telemetry.
+// ResetState clears remembered per-host fallback entries and resets telemetry.
 func (c *Client) ResetState() {
 	c.mu.Lock()
 	c.httpFallbackHosts = make(map[string]bool)
+	c.legacyTLSHosts = make(map[string]bool)
 	c.lastTLS = TLSInfo{Transport: "Idle", Protocol: "—"}
 	c.mu.Unlock()
 }
@@ -225,6 +228,22 @@ func (c *Client) hasHTTPFallback(key string) bool {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	return c.httpFallbackHosts[key]
+}
+
+func (c *Client) setLegacyTLS(key string, enabled bool) {
+	c.mu.Lock()
+	if enabled {
+		c.legacyTLSHosts[key] = true
+	} else {
+		delete(c.legacyTLSHosts, key)
+	}
+	c.mu.Unlock()
+}
+
+func (c *Client) prefersLegacyTLS(key string) bool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.legacyTLSHosts[key]
 }
 
 func (c *Client) recordTelemetry(info TLSInfo) {
@@ -265,7 +284,7 @@ func (c *Client) SendRequest(ctx context.Context, targetEndpoint string, preset 
 
 		lastErr = err
 		if attempt < defaultMaxRetries && isRetryableError(err) && ctx.Err() == nil {
-			c.log(fmt.Sprintf("⚠️ Retry %d/%d for %s %s (%v)", attempt+1, defaultMaxRetries, req.Method, req.Path, err))
+			c.log(fmt.Sprintf("[RETRY %d/%d] %s %s (%v)", attempt+1, defaultMaxRetries, req.Method, req.Path, err))
 			select {
 			case <-time.After(retryDelay):
 			case <-ctx.Done():
@@ -287,17 +306,19 @@ func (c *Client) SendRequest(ctx context.Context, targetEndpoint string, preset 
 func (c *Client) executeWithFallbacks(ctx context.Context, rawTarget string, endpoint Endpoint, preset HardwarePreset, req UpstreamRequest, cookieHeader string) (UpstreamResponse, Endpoint, error) {
 	hostKey := endpoint.BareHost()
 	portKey := fmt.Sprintf("%s:%d", hostKey, endpoint.Port)
+	preferLegacy := preset.PreferLegacyTLS || c.prefersLegacyTLS(portKey)
 
-	resp, err := c.executeSingle(ctx, endpoint, preset.PreferLegacyTLS, req, cookieHeader)
+	resp, err := c.executeSingle(ctx, endpoint, preferLegacy, req, cookieHeader)
 	if err == nil {
 		return resp, endpoint, nil
 	}
 
 	// If modern TLS 1.3 ClientHello (e.g., ML-KEM / extra extensions) was rejected by old firmware,
-	// immediately retry with a stripped TLS 1.0–1.2 legacy ClientHello.
-	if endpoint.UseTLS && !preset.PreferLegacyTLS && isTLSHandshakeAlertOrReset(err) {
-		c.log(fmt.Sprintf("🔄 Modern ClientHello rejected by %s; retrying with stripped TLS 1.0–1.2 legacy profile...", endpoint.DialAddress()))
+	// immediately retry with a stripped TLS 1.0–1.2 legacy ClientHello and remember it per host:port.
+	if endpoint.UseTLS && !preferLegacy && isTLSHandshakeAlertOrReset(err) {
+		c.log(fmt.Sprintf("[TLS] Modern ClientHello rejected by %s; switching to TLS 1.0-1.2 legacy profile", endpoint.DialAddress()))
 		if legacyResp, legacyErr := c.executeSingle(ctx, endpoint, true, req, cookieHeader); legacyErr == nil {
+			c.setLegacyTLS(portKey, true)
 			return legacyResp, endpoint, nil
 		} else {
 			err = legacyErr
@@ -309,7 +330,7 @@ func (c *Client) executeWithFallbacks(ctx context.Context, rawTarget string, end
 	explicitHTTPS := strings.HasPrefix(strings.ToLower(strings.TrimSpace(rawTarget)), "https://")
 	var recordErr tls.RecordHeaderError
 	if endpoint.UseTLS && !explicitHTTPS && errors.As(err, &recordErr) {
-		c.log(fmt.Sprintf("🔄 Port %d on %s spoke plain HTTP instead of TLS; switching to HTTP...", endpoint.Port, endpoint.Host))
+		c.log(fmt.Sprintf("[HTTP] Port %d on %s spoke plain HTTP instead of TLS; switching to HTTP", endpoint.Port, endpoint.Host))
 		httpEndpoint := Endpoint{
 			Host:                 endpoint.Host,
 			Port:                 endpoint.Port,
@@ -324,7 +345,7 @@ func (c *Client) executeWithFallbacks(ctx context.Context, rawTarget string, end
 
 	// Default HTTPS (:443) -> HTTP (:80) fallback when no explicit port or scheme was specified.
 	if !endpoint.ExplicitPortOrScheme && endpoint.UseTLS && endpoint.Port == 443 && (isConnectionRefusedError(err) || isImmediateResetError(err)) {
-		c.log(fmt.Sprintf("🔄 HTTPS on %s:443 refused/reset; falling back to plain HTTP on port 80...", endpoint.Host))
+		c.log(fmt.Sprintf("[HTTP] HTTPS on %s:443 refused/reset; falling back to plain HTTP on port 80", endpoint.Host))
 		httpEndpoint := Endpoint{
 			Host:                 endpoint.Host,
 			Port:                 80,
@@ -342,14 +363,14 @@ func (c *Client) executeWithFallbacks(ctx context.Context, rawTarget string, end
 	// If a previously cached HTTP :80 fallback now refuses connection, clear cache and retry :443.
 	if !endpoint.ExplicitPortOrScheme && !endpoint.UseTLS && endpoint.Port == 80 && isConnectionRefusedError(err) {
 		c.setHTTPFallback(hostKey, false)
-		c.log(fmt.Sprintf("🔄 Cached HTTP port 80 refused on %s; retrying HTTPS on port 443...", endpoint.Host))
+		c.log(fmt.Sprintf("[TLS] Cached HTTP port 80 refused on %s; retrying HTTPS on port 443", endpoint.Host))
 		httpsEndpoint := Endpoint{
 			Host:                 endpoint.Host,
 			Port:                 443,
 			UseTLS:               true,
 			ExplicitPortOrScheme: false,
 		}
-		httpsResp, httpsErr := c.executeSingle(ctx, httpsEndpoint, preset.PreferLegacyTLS, req, cookieHeader)
+		httpsResp, httpsErr := c.executeSingle(ctx, httpsEndpoint, preferLegacy, req, cookieHeader)
 		return httpsResp, httpsEndpoint, httpsErr
 	}
 

@@ -62,7 +62,7 @@ func main() {
 
 	listeners, boundPort, alreadyRunning, err := listenWithFallback(*portFlag)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "[Proxy ❌ Startup Error] %v\n", err)
+		fmt.Fprintf(os.Stderr, "[ERR] Startup failed: %v\n", err)
 		os.Exit(1)
 	}
 
@@ -73,12 +73,12 @@ func main() {
 	launchURL := fmt.Sprintf("http://localhost:%d%s", boundPort, launchPath)
 
 	if alreadyRunning {
-		fmt.Println("\n======================================================")
-		fmt.Printf("ℹ️  Port %d is already serving Legacy Router Opener.\n", boundPort)
-		fmt.Printf("👉 Control Launchpad: http://localhost:%d/_bridge\n", boundPort)
-		fmt.Printf("👉 Device Dashboard:  http://localhost:%d/\n", boundPort)
-		fmt.Println("🔒 Reusing existing instance to avoid router session conflicts.")
-		fmt.Println("======================================================")
+		fmt.Println("\n------------------------------------------------------")
+		fmt.Printf("[INFO] Port %d is already serving Router Page Opener.\n", boundPort)
+		fmt.Printf("Opener Page:  http://localhost:%d/_bridge\n", boundPort)
+		fmt.Printf("Router Page:  http://localhost:%d/\n", boundPort)
+		fmt.Println("[INFO] Reusing existing instance to avoid session conflicts.")
+		fmt.Println("------------------------------------------------------")
 		if !*noBrowserFlag {
 			_ = openBrowser(launchURL)
 		}
@@ -93,13 +93,13 @@ func main() {
 	}
 
 	snap := srv.Snapshot()
-	fmt.Println("\n======================================================")
-	fmt.Println("🚀 Legacy Router & Device Opener (Go Standalone Bridge)")
-	fmt.Printf("🔍 Detected Gateway:  %s\n", detectedGateway)
-	fmt.Printf("🎯 Active Target:     %s (%s)\n", snap.ResolvedTarget, proxy.FindPreset(snap.Preset).Name)
-	fmt.Printf("🎛️  Control Launchpad: http://localhost:%d/_bridge\n", boundPort)
-	fmt.Printf("🌐 Device Dashboard:  http://localhost:%d/\n", boundPort)
-	fmt.Println("======================================================")
+	fmt.Println("\n------------------------------------------------------")
+	fmt.Println("Router Page Opener (Standalone Desktop Bridge)")
+	fmt.Printf("Gateway:      %s\n", detectedGateway)
+	fmt.Printf("Target:       %s (%s)\n", snap.ResolvedTarget, proxy.FindPreset(snap.Preset).Name)
+	fmt.Printf("Opener Page:  http://localhost:%d/_bridge\n", boundPort)
+	fmt.Printf("Router Page:  http://localhost:%d/\n", boundPort)
+	fmt.Println("------------------------------------------------------")
 	fmt.Println("Press Ctrl+C to stop.")
 
 	errCh := make(chan error, len(listeners))
@@ -124,12 +124,12 @@ func main() {
 
 	select {
 	case sig := <-sigCh:
-		fmt.Printf("\n⏹️  Received %s, shutting down...\n", sig)
+		fmt.Printf("\n[STOP] Received %s, shutting down...\n", sig)
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 		_ = httpServer.Shutdown(ctx)
 		cancel()
 	case serveErr := <-errCh:
-		fmt.Fprintf(os.Stderr, "[Proxy ❌ Server Error] %v\n", serveErr)
+		fmt.Fprintf(os.Stderr, "[ERR] Server error: %v\n", serveErr)
 		os.Exit(1)
 	}
 }
@@ -160,9 +160,9 @@ func listenWithFallback(startPort int) ([]net.Listener, int, bool, error) {
 		}
 
 		if offset == 0 {
-			fmt.Printf("[Proxy ⚠️] Port %d is in use by another app; trying fallback port...\n", candidate)
+			fmt.Printf("[WARN] Port %d is in use by another app; trying fallback port...\n", candidate)
 		} else {
-			fmt.Printf("[Proxy ⚠️] Port %d is also in use; trying next port...\n", candidate)
+			fmt.Printf("[WARN] Port %d is also in use; trying next port...\n", candidate)
 		}
 	}
 

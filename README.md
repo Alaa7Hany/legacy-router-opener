@@ -3,8 +3,8 @@
 > **A local TLS-bypass reverse proxy & mobile app for archaic TE Data, Huawei (HG531 V1 / HG532n), and ZTE (ZXHN) router administration dashboards.**
 
 Available as:
-* 💻 **Desktop App** (Standalone ~7.6 MB Go binary — zero Node.js or runtime dependencies + built-in `/_bridge` Web Control Launchpad)
-* 📱 **Android App** (Standalone Jetpack Compose + Embedded Proxy & In-App WebView)
+* 💻 **Desktop App** ([`desktop/`](desktop/)) — Standalone ~7.6 MB Go binary (zero dependencies) + minimalist `/_bridge` opener page
+* 📱 **Android App** ([`android/`](android/)) — Standalone Jetpack Compose + Embedded Proxy & In-App WebView
 
 ---
 
@@ -55,24 +55,26 @@ The Android app provides a 100% mobile, standalone solution. It runs an embedded
 
 ---
 
-## 💻 Desktop Quick Start (Windows / Mac / Linux)
+## 💻 Desktop Quick Start (`desktop/`)
 
 ### Option A: Standalone Executable (Zero Dependencies — Recommended)
-1. Download `legacy-router-opener.exe` (or double-click `start.bat`). **No Node.js, Python, or Go installation required.**
-2. Your browser will automatically open the dark-mode **Control Launchpad** at:
-   👉 **`http://localhost:8080/_bridge`**
-3. Confirm or edit your Router/Device `IP:Port`, pick a hardware preset if desired (*Huawei/ZTE*, *Dell iDRAC*, *HPE iLO*, *APC UPS*, *Cisco/HP Switch*), and click **Apply & Open Device Dashboard** (opens `http://localhost:8080/`).
-4. If a router gets stuck with `"Duplicated Login"` or `"SessionExhaustedError"`, click **Reset Stuck Session & Cache** right inside the Launchpad.
+1. Download `legacy-router-opener.exe` (or double-click `desktop/start.bat`). **No Node.js, Python, or Go installation required.**
+2. Your browser opens the opener card at **`http://localhost:8080/_bridge`**.
+3. Click **Open Router Page (`192.168.1.1`)** to launch your router dashboard at `http://localhost:8080/`.
+4. Expand **Change IP or device type** to switch targets/profiles, or click **Reset session** if a router login gets stuck.
+
+See [Desktop Documentation](desktop/docs/README.md) for plain-English guides on how it works, design decisions, and troubleshooting.
 
 ### Option B: Build / Run From Source (Developers)
 - **Go 1.24+:**
   ```bash
-  go test -v ./...
+  cd desktop
+  go test -count=1 -v ./...
   go build -ldflags="-s -w" -o legacy-router-opener.exe .
   ./legacy-router-opener.exe
   ```
 - **CLI Flags:** `-target 192.168.1.1:443`, `-preset huawei-zte`, `-port 8080`, `-open-router`, `-no-browser`
-- **Legacy Node.js fallback script:** `node --openssl-legacy-provider index.mjs` is also preserved in the repository.
+- **Legacy Node.js fallback script:** `node --openssl-legacy-provider desktop/index.mjs` is preserved in `desktop/`.
 
 ---
 

@@ -578,8 +578,13 @@ func TestBridgeControlAPIAndSessionReset(t *testing.T) {
 	}
 	htmlBytes, _ := io.ReadAll(res.Body)
 	_ = res.Body.Close()
-	if res.StatusCode != http.StatusOK || !strings.Contains(string(htmlBytes), `name="color-scheme" content="dark"`) {
-		t.Fatalf("unexpected /_bridge response: %d", res.StatusCode)
+	bodyStr := string(htmlBytes)
+	if res.StatusCode != http.StatusOK ||
+		!strings.Contains(bodyStr, `name="color-scheme" content="light dark"`) ||
+		!strings.Contains(bodyStr, `Open Router Page`) ||
+		!strings.Contains(bodyStr, `<details id="options-panel">`) ||
+		!strings.Contains(bodyStr, `<details id="logs-panel">`) {
+		t.Fatalf("unexpected /_bridge response: status=%d", res.StatusCode)
 	}
 
 	// 2. Ping endpoint sets proxy header
@@ -616,6 +621,17 @@ func TestBridgeControlAPIAndSessionReset(t *testing.T) {
 	_ = cfgRes.Body.Close()
 	if snap.Target != "10.10.10.50:443" || snap.Preset != "ilo" || snap.MaxSockets != 2 {
 		t.Fatalf("unexpected snapshot after config update: %+v", snap)
+	}
+
+	// Verify /_bridge SSR-hydrates the updated target into the HTML immediately
+	reloadedRes, err := http.Get(ts.URL + "/_bridge")
+	if err != nil {
+		t.Fatalf("GET /_bridge after config failed: %v", err)
+	}
+	reloadedBytes, _ := io.ReadAll(reloadedRes.Body)
+	_ = reloadedRes.Body.Close()
+	if !strings.Contains(string(reloadedBytes), `Open Router Page (10.10.10.50:443)`) {
+		t.Fatalf("expected updated target hydrated in /_bridge HTML")
 	}
 
 	// 5. Session reset clears cookies & emits browser eviction headers
