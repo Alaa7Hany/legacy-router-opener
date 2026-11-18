@@ -44,3 +44,39 @@ Wireless LAN adapter Wi-Fi:
 		t.Fatalf("ParseMacRouteGet = %q, want 172.16.0.1", got)
 	}
 }
+
+func TestWindowsGatewaysAtOtherAddresses(t *testing.T) {
+	for _, tc := range []struct {
+		name, route, ipconfig, want string
+	}{
+		{
+			name: "192.168.0.1",
+			route: "Active Routes:\n" +
+				"0.0.0.0 0.0.0.0 192.168.1.1 192.168.1.23 55\n" +
+				"0.0.0.0 0.0.0.0 192.168.0.1 192.168.0.23 15\n",
+			ipconfig: "Wireless LAN adapter Wi-Fi:\r\n" +
+				"   IPv4 Address. . . . . . . . . . . : 192.168.0.23\r\n" +
+				"   Default Gateway . . . . . . . . . : 192.168.0.1\r\n",
+			want: "192.168.0.1",
+		},
+		{
+			name: "10.0.0.1",
+			route: "Active Routes:\n" +
+				"0.0.0.0 0.0.0.0 On-link 10.64.0.2 10\n" +
+				"0.0.0.0 0.0.0.0 10.0.0.1 10.0.0.42 25\n",
+			ipconfig: "Ethernet adapter Ethernet:\r\n" +
+				"   IPv4 Address. . . . . . . . . . . : 10.0.0.42\r\n" +
+				"   Default Gateway . . . . . . . . . : 10.0.0.1\r\n",
+			want: "10.0.0.1",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := ParseWindowsRoutePrint(tc.route); got != tc.want {
+				t.Errorf("route table identifies %q, want %q", got, tc.want)
+			}
+			if got := ParseWindowsIPConfig(tc.ipconfig); got != tc.want {
+				t.Errorf("ipconfig identifies %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
