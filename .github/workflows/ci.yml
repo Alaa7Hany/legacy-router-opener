@@ -1,0 +1,51 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'desktop/**'
+      - '.github/workflows/ci.yml'
+  pull_request:
+    paths:
+      - 'desktop/**'
+      - '.github/workflows/ci.yml'
+
+jobs:
+  desktop-windows:
+    name: Windows Desktop (Go)
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: pwsh
+        working-directory: desktop
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: desktop/go.mod
+          cache: false
+
+      - name: Run go vet
+        run: go vet ./...
+
+      - name: Run unit tests
+        run: go test -v -count=1 ./...
+
+      - name: Smoke-build executable
+        run: .\build.ps1 -Version 0.0.0-ci
+
+      - name: Verify --version output
+        run: |
+          $output = (.\legacy-router-opener.exe --version | Out-String).Trim()
+          Write-Host "Version output: $output"
+          if ($LASTEXITCODE -ne 0) {
+            throw "legacy-router-opener.exe --version exited with code $LASTEXITCODE"
+          }
+          if ($output -ne "legacy-router-opener 0.0.0-ci") {
+            throw "Unexpected --version output: '$output'"
+          }

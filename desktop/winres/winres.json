@@ -1,0 +1,39 @@
+{
+  "RT_GROUP_ICON": {
+    "APP": {
+      "0000": "../assets/app.ico"
+    }
+  },
+  "RT_MANIFEST": {
+    "#1": {
+      "0409": {
+        "minimum-os": "win10",
+        "execution-level": "asInvoker",
+        "dpi-awareness": "per monitor v2",
+        "use-common-controls-v6": true
+      }
+    }
+  },
+  "RT_VERSION": {
+    "#1": {
+      "0000": {
+        "fixed": {
+          "file_version": "0.0.0.0",
+          "product_version": "0.0.0.0"
+        },
+        "info": {
+          "0409": {
+            "CompanyName": "LOL7harrr",
+            "FileDescription": "Local legacy TLS bridge for older routers, printers, switches, and server consoles",
+            "FileVersion": "0.0.0.0",
+            "InternalName": "legacy-router-opener",
+            "LegalCopyright": "Copyright (c) 2026 Alaa Hany (GPL-3.0)",
+            "OriginalFilename": "legacy-router-opener.exe",
+            "ProductName": "Legacy Device & Router Opener",
+            "ProductVersion": "0.0.0.0"
+          }
+        }
+      }
+    }
+  }
+}

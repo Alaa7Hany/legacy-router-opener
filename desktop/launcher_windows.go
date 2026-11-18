@@ -50,26 +50,44 @@ func shouldShowErrorDialog(noBrowser, consoleAttached bool) bool {
 	return !noBrowser && !consoleAttached
 }
 
-func reportLaunchError(err error, noBrowser bool) {
+func attachParentConsole() bool {
 	const attachParentProcess = ^uintptr(0)
-	const stdErrorHandle = ^uintptr(11) // (DWORD)-12 = STD_ERROR_HANDLE
-
-	consoleAttached := false
 	if console, _, _ := getConsoleWindow.Call(); console != 0 {
-		consoleAttached = true
-	} else if ok, _, _ := attachConsole.Call(attachParentProcess); ok != 0 {
-		consoleAttached = true
+		return true
 	}
+	ok, _, _ := attachConsole.Call(attachParentProcess)
+	return ok != 0
+}
 
-	if _, writeErr := fmt.Fprintln(os.Stderr, err); writeErr != nil && consoleAttached {
-		if handle, _, _ := getStdHandle.Call(stdErrorHandle); handle != 0 && handle != ^uintptr(0) {
-			_, _ = fmt.Fprintln(os.NewFile(handle, "stderr"), err)
-		} else if con, openErr := os.OpenFile("CONOUT$", os.O_WRONLY, 0); openErr == nil {
-			_, _ = fmt.Fprintln(con, err)
-			_ = con.Close()
+func writeConsoleLine(stream *os.File, stdHandleID uintptr, line string) bool {
+	consoleAttached := attachParentConsole()
+	if _, writeErr := fmt.Fprintln(stream, line); writeErr == nil {
+		return consoleAttached
+	}
+	if !consoleAttached {
+		return false
+	}
+	if handle, _, _ := getStdHandle.Call(stdHandleID); handle != 0 && handle != ^uintptr(0) {
+		if _, err := syscall.Write(syscall.Handle(handle), []byte(line+"\r\n")); err == nil {
+			return true
 		}
 	}
+	if con, openErr := os.OpenFile("CONOUT$", os.O_WRONLY, 0); openErr == nil {
+		_, _ = fmt.Fprintln(con, line)
+		_ = con.Close()
+	}
+	return true
+}
 
+func writeStdoutLine(line string) {
+	const stdOutputHandle = ^uintptr(10) // (DWORD)-11 = STD_OUTPUT_HANDLE
+	writeConsoleLine(os.Stdout, stdOutputHandle, line)
+}
+
+func reportLaunchError(err error, noBrowser bool) {
+	const stdErrorHandle = ^uintptr(11) // (DWORD)-12 = STD_ERROR_HANDLE
+
+	consoleAttached := writeConsoleLine(os.Stderr, stdErrorHandle, err.Error())
 	if !shouldShowErrorDialog(noBrowser, consoleAttached) {
 		return
 	}

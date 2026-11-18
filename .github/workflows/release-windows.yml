@@ -1,0 +1,126 @@
+name: Release Windows
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release version (e.g. 0.9.0 or v0.9.0)'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  release-windows:
+    name: Build & Publish Windows Release
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: desktop/go.mod
+          cache: false
+
+      - name: Derive release metadata
+        run: |
+          if ("${{ github.event_name }}" -eq "workflow_dispatch") {
+            $raw = "${{ inputs.version }}".Trim()
+          } else {
+            $raw = "${{ github.ref_name }}".Trim()
+          }
+
+          $version = $raw -replace '^[vV]', ''
+          if ($version -notmatch '^[0-9]+(\.[0-9]+){1,3}(-[0-9A-Za-z.-]+)?$') {
+            throw "Invalid version '$raw'. Expected e.g. v0.9.0 or 1.0.0-rc.1."
+          }
+
+          $core = ($version -split '[-+]', 2)[0]
+          $parts = [System.Collections.Generic.List[string]]::new($core.Split('.'))
+          while ($parts.Count -lt 4) {
+            $parts.Add("0")
+          }
+          $fileVersion = $parts -join '.'
+          $isPrerelease = if ($version.Contains('-')) { 'true' } else { 'false' }
+
+          "VERSION=$version" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "FILE_VERSION=$fileVersion" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "TAG_NAME=v$version" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "IS_PRERELEASE=$isPrerelease" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+          Write-Host "VERSION=$version FILE_VERSION=$fileVersion TAG_NAME=v$version IS_PRERELEASE=$isPrerelease"
+
+      - name: Run go vet
+        working-directory: desktop
+        run: go vet ./...
+
+      - name: Run unit tests
+        working-directory: desktop
+        run: go test -count=1 ./...
+
+      - name: Build Windows executable
+        working-directory: desktop
+        run: .\build.ps1 -Version $env:VERSION
+
+      - name: Verify executable metadata and --version
+        working-directory: desktop
+        run: |
+          $info = (Get-Item legacy-router-opener.exe).VersionInfo
+          Write-Host ($info | Format-List ProductName, FileDescription, CompanyName, FileVersion, ProductVersion, OriginalFilename, InternalName, LegalCopyright | Out-String)
+          if ($info.FileVersion -ne $env:FILE_VERSION) {
+            throw "FileVersion '$($info.FileVersion)' did not match expected '$env:FILE_VERSION'"
+          }
+          $verOutput = (.\legacy-router-opener.exe --version | Out-String).Trim()
+          if ($LASTEXITCODE -ne 0 -or $verOutput -ne "legacy-router-opener $($env:VERSION)") {
+            throw "Unexpected --version output: '$verOutput' (exit $LASTEXITCODE)"
+          }
+
+      - name: Generate SHA256SUMS.txt
+        working-directory: desktop
+        run: |
+          $hash = (Get-FileHash -Path "legacy-router-opener.exe" -Algorithm SHA256).Hash.ToLowerInvariant()
+          [System.IO.File]::WriteAllText("$PWD\SHA256SUMS.txt", "$hash  legacy-router-opener.exe`n")
+          Get-Content SHA256SUMS.txt
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = $env:TAG_NAME
+          $isPre = $env:IS_PRERELEASE -eq 'true'
+
+          $null = & gh release view $tag 2>$null
+          if ($LASTEXITCODE -eq 0) {
+            & gh release upload $tag desktop/legacy-router-opener.exe desktop/SHA256SUMS.txt --clobber
+            if ($LASTEXITCODE -ne 0) { throw "gh release upload failed with exit code $LASTEXITCODE" }
+
+            & gh release edit $tag "--prerelease=$($env:IS_PRERELEASE)"
+            if ($LASTEXITCODE -ne 0) { throw "gh release edit failed with exit code $LASTEXITCODE" }
+          } else {
+            $releaseArgs = @(
+              'release', 'create', $tag,
+              'desktop/legacy-router-opener.exe',
+              'desktop/SHA256SUMS.txt',
+              '--title', $tag,
+              '--generate-notes'
+            )
+            if ("${{ github.event_name }}" -eq "workflow_dispatch") {
+              $releaseArgs += @('--target', '${{ github.sha }}')
+            } else {
+              $releaseArgs += '--verify-tag'
+            }
+            if ($isPre) {
+              $releaseArgs += '--prerelease'
+            }
+            & gh @releaseArgs
+            if ($LASTEXITCODE -ne 0) { throw "gh release create failed with exit code $LASTEXITCODE" }
+          }

@@ -21,6 +21,10 @@ func shouldShowErrorDialog(noBrowser, consoleAttached bool) bool {
 	return false
 }
 
+func writeStdoutLine(line string) {
+	fmt.Fprintln(os.Stdout, line)
+}
+
 func reportLaunchError(err error, _ bool) {
 	fmt.Fprintln(os.Stderr, err)
 }

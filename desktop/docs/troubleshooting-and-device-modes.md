@@ -68,3 +68,16 @@ The standalone Windows executable (`legacy-router-opener.exe`, built with Go 1.2
 - **Supported:** TLS 1.0–1.3, 1024-bit RSA keys, SHA-1 signatures, expired/self-signed/negative-serial certificates, `3DES`, `RC4`, and `AES-CBC` cipher suites, server-initiated renegotiation (both RFC 5746 and unsafe legacy renegotiation), abrupt TCP close without TLS `close_notify`, compact ClientHello fallback, and automatic `:443` → `:80` / plain HTTP fallback.
 - **Not supported by the Go stdlib `.exe`:** finite-field `DHE-RSA` cipher suites (used by some Dell iDRAC 6 configurations) and `SSLv3` (used by older APC NMC1 cards such as `AP9617`).
   - If your device requires `DHE-RSA` or `SSLv3`, try plain HTTP (`http://<device-ip>` on port `80`) if enabled on the device, or run the included OpenSSL-backed Node.js fallback at [`desktop/legacy/index.mjs`](../legacy/index.mjs).
+
+---
+
+## CLI Flags
+
+| Flag | Default | Description |
+| :--- | :--- | :--- |
+| `-port` | `8080` (`PROXY_PORT`) | Local proxy port (control UI binds `port + 100` or next free port) |
+| `-target` | Auto-detected gateway (`ROUTER_IP`) | Target router/device IP, host:port, or `http://` / `https://` URL |
+| `-preset` | `auto` | Compatibility profile (`auto`, `huawei-zte`, `idrac`, `ilo`, `apc`, `cisco-hp`, `printer-nas`) |
+| `-open-router` | `false` | Open the proxied device root (`/`) directly instead of `/_bridge` |
+| `-no-browser` | `false` | Start the bridge without auto-opening a browser window |
+| `-version` / `--version` | — | Print `legacy-router-opener <version>` and exit `0` |

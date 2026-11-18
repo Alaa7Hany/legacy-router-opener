@@ -33,6 +33,7 @@ android/.idea/
 *.aab
 *.ap_
 *.exe
+*.syso
 captures/
 .externalNativeBuild/
 .cxx/

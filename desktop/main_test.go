@@ -240,3 +240,41 @@ func TestRSA1024And3DESWithGoDebugDirectives(t *testing.T) {
 		t.Fatalf("expected 1024-bit RSA telemetry, got %+v", info)
 	}
 }
+
+func TestVersionFlagAndFormatting(t *testing.T) {
+	if got := formatVersion(version); got != "legacy-router-opener "+version {
+		t.Fatalf("formatVersion(default %q) = %q", version, got)
+	}
+	for _, tc := range []struct {
+		in   string
+		want string
+	}{
+		{"", "legacy-router-opener dev"},
+		{"   ", "legacy-router-opener dev"},
+		{"dev", "legacy-router-opener dev"},
+		{"0.9.0", "legacy-router-opener 0.9.0"},
+		{" 1.0.0-rc.1 ", "legacy-router-opener 1.0.0-rc.1"},
+	} {
+		if got := formatVersion(tc.in); got != tc.want {
+			t.Fatalf("formatVersion(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+
+	for _, flagArg := range []string{"-version", "--version"} {
+		opts, err := parseLaunchOptionsArgs([]string{flagArg}, nil, io.Discard)
+		if err != nil {
+			t.Fatalf("parseLaunchOptionsArgs(%q) failed: %v", flagArg, err)
+		}
+		if !opts.showVersion {
+			t.Fatalf("parseLaunchOptionsArgs(%q) showVersion = false, want true", flagArg)
+		}
+	}
+
+	opts, err := parseLaunchOptionsArgs([]string{"-port", "9090", "192.168.100.1"}, nil, io.Discard)
+	if err != nil {
+		t.Fatalf("parseLaunchOptionsArgs(normal) failed: %v", err)
+	}
+	if opts.showVersion || opts.port != 9090 || opts.target != "192.168.100.1" {
+		t.Fatalf("unexpected parsed options: %+v", opts)
+	}
+}
