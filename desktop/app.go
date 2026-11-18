@@ -122,7 +122,6 @@ func startApp(options launchOptions) (*desktopApp, string, error) {
 		InitialPresetID: options.preset,
 		DetectedGateway: detectedGateway,
 		OnStdoutLog:     func(line string) { fmt.Println(line) },
-		OnProxyActivity: app.tabs.recordProxyActivity,
 		QuitURL:         quitPath,
 		Stopping:        app.stopping,
 		WatchOpenerTab:  app.tabs.connect,

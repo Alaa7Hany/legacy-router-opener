@@ -51,8 +51,6 @@ type cachedAsset struct {
 }
 
 func (s *Server) handleProxy(w http.ResponseWriter, r *http.Request) {
-	s.recordProxyActivity()
-
 	s.mu.RLock()
 	target := s.target
 	preset := s.preset

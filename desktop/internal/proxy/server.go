@@ -41,7 +41,6 @@ type Server struct {
 	logs            []string
 	sseSubscribers  map[chan struct{}]struct{}
 	onStdoutLog     func(string)
-	onProxyActivity func()
 	client          *upstream.Client
 	quitURL         string
 	stopping        <-chan struct{}
@@ -57,7 +56,6 @@ type Options struct {
 	InitialPresetID string
 	DetectedGateway string
 	OnStdoutLog     func(string)
-	OnProxyActivity func()
 	QuitURL         string
 	Stopping        <-chan struct{}
 	WatchOpenerTab  func() func()
@@ -94,7 +92,6 @@ func NewServer(opts Options) *Server {
 		staticCache:     make(map[string]cachedAsset),
 		sseSubscribers:  make(map[chan struct{}]struct{}),
 		onStdoutLog:     opts.OnStdoutLog,
-		onProxyActivity: opts.OnProxyActivity,
 		quitURL:         opts.QuitURL,
 		stopping:        opts.Stopping,
 		watchOpenerTab:  opts.WatchOpenerTab,
@@ -191,12 +188,6 @@ func (s *Server) UpdateTarget(rawTarget string, presetID string) error {
 func (s *Server) CheckTargetAllowed(rawTarget string) error {
 	ep := upstream.ParseEndpoint(rawTarget)
 	return s.client.CheckTargetAllowed(context.Background(), ep)
-}
-
-func (s *Server) recordProxyActivity() {
-	if s.onProxyActivity != nil {
-		s.onProxyActivity()
-	}
 }
 
 // Snapshot returns a thread-safe snapshot of current state, telemetry, and logs.
