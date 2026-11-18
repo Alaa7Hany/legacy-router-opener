@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"path"
+	"strings"
 	"time"
 )
 
@@ -17,6 +18,26 @@ var pages = template.Must(template.ParseFS(files, "*.html"))
 
 //go:embed assets/bridge.css
 var bridgeCSS string
+
+//go:embed assets/error.css
+var errorCSS string
+
+//go:embed assets/locale.js
+var localeJS string
+
+//go:embed assets/error.js
+var errorJS string
+
+var (
+	errorPageCSS = template.CSS(bridgeCSS + "\n" + errorCSS)
+	errorPageJS  = template.JS(buildErrorScript())
+)
+
+func buildErrorScript() string {
+	localePart := strings.Replace(localeJS, "export function activateLanguage", "function activateLanguage", 1)
+	errorPart := strings.Replace(errorJS, "import { activateLanguage } from './locale.js';", "", 1)
+	return "(function () {\n" + localePart + "\n" + errorPart + "\n})();"
+}
 
 func WriteBridge(w io.Writer, language, target, gateway, quitURL string, state any) error {
 	if target == "" {
@@ -33,11 +54,16 @@ func WriteBridge(w io.Writer, language, target, gateway, quitURL string, state a
 	return pages.ExecuteTemplate(w, "bridge.html", data)
 }
 
-func WriteError(w io.Writer, language, target, message string) error {
+func WriteError(w io.Writer, language, target, message, openerURL string) error {
+	if openerURL == "" {
+		openerURL = "/_bridge"
+	}
 	return pages.ExecuteTemplate(w, "error.html", struct {
 		pageLanguage
-		Target, Message string
-	}{forLanguage(language), target, message})
+		Target, Message, OpenerURL string
+		CSS                        template.CSS
+		JS                         template.JS
+	}{forLanguage(language), target, message, openerURL, errorPageCSS, errorPageJS})
 }
 
 func WriteQuit(w io.Writer, language, openerURL, token string) error {

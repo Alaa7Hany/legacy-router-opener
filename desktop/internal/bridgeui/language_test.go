@@ -1,6 +1,7 @@
 package bridgeui
 
 import (
+	"bytes"
 	"strings"
 	"testing"
 
@@ -43,5 +44,49 @@ func TestCatalogContainsTranslationsForBothLanguages(t *testing.T) {
 				}
 			}
 		}
+	}
+}
+
+func TestWriteErrorAndQuitAreSelfContainedAndThemeAware(t *testing.T) {
+	var errBuf bytes.Buffer
+	if err := WriteError(&errBuf, "ar", "192.168.1.1", "connection refused", "http://localhost:8180/_bridge"); err != nil {
+		t.Fatalf("WriteError failed: %v", err)
+	}
+	errHTML := errBuf.String()
+	for _, want := range []string{
+		`href="http://localhost:8180/_bridge?edit=1&amp;lang=ar"`,
+		`href="http://localhost:8180/_bridge?lang=ar"`,
+		`function activateLanguage`,
+		`retry-btn`,
+	} {
+		if !strings.Contains(errHTML, want) {
+			t.Errorf("error.html missing %q", want)
+		}
+	}
+	for _, unwanted := range []string{
+		`/_bridge/assets/`,
+		`/_bridge/api/config`,
+		`export function`,
+		`import { activateLanguage }`,
+	} {
+		if strings.Contains(errHTML, unwanted) {
+			t.Errorf("error.html should not contain %q", unwanted)
+		}
+	}
+
+	var quitBuf bytes.Buffer
+	if err := WriteQuit(&quitBuf, "ar", "http://127.0.0.1:8180/_bridge?lang=ar", "tok123"); err != nil {
+		t.Fatalf("WriteQuit failed: %v", err)
+	}
+	quitHTML := quitBuf.String()
+	if !strings.Contains(quitHTML, `<meta name="color-scheme" content="light dark">`) {
+		t.Errorf("quit.html missing color-scheme meta tag")
+	}
+	if !strings.Contains(quitHTML, `href="http://127.0.0.1:8180/_bridge?lang=ar"`) {
+		t.Errorf("quit.html missing Cancel link preserving lang")
+	}
+
+	if !strings.Contains(bridgeCSS, "white-space: normal;") || !strings.Contains(bridgeCSS, "overflow-wrap: anywhere;") {
+		t.Errorf("bridge.css .tls-line should wrap cleanly on narrow viewports")
 	}
 }

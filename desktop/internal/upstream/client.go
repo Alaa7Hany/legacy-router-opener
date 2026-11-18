@@ -8,11 +8,15 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
 	"time"
 )
+
+// ErrSelfTargetBlocked is returned when a target resolves to a loopback or unspecified address on one of the app's own ports.
+var ErrSelfTargetBlocked = errors.New("cannot target the bridge's own local ports")
 
 const (
 	defaultConnectTimeout = 10 * time.Second
@@ -26,24 +30,71 @@ type Client struct {
 	limiter *slotLimiter
 	onLog   func(string)
 
-	mu                sync.RWMutex
-	httpFallbackHosts map[string]bool
-	legacyTLSHosts    map[string]bool
-	lastTLS           TLSInfo
+	mu                   sync.RWMutex
+	httpFallbackHosts    map[string]bool
+	legacyTLSHosts       map[string]bool
+	blockedLoopbackPorts map[int]bool
+	lastTLS              TLSInfo
 }
 
 // NewClient constructs a Client with the given max concurrent socket limit and optional logger.
 func NewClient(maxSockets int, onLog func(string)) *Client {
 	return &Client{
-		limiter:           newSlotLimiter(maxSockets),
-		onLog:             onLog,
-		httpFallbackHosts: make(map[string]bool),
-		legacyTLSHosts:    make(map[string]bool),
+		limiter:              newSlotLimiter(maxSockets),
+		onLog:                onLog,
+		httpFallbackHosts:    make(map[string]bool),
+		legacyTLSHosts:       make(map[string]bool),
+		blockedLoopbackPorts: make(map[int]bool),
 		lastTLS: TLSInfo{
 			Transport: "Idle",
 			Protocol:  "—",
 		},
 	}
+}
+
+// SetBlockedLoopbackPorts configures ports (such as the proxy and control ports) that may not be targeted via loopback.
+func (c *Client) SetBlockedLoopbackPorts(ports ...int) {
+	c.mu.Lock()
+	c.blockedLoopbackPorts = make(map[int]bool, len(ports))
+	for _, p := range ports {
+		if p > 0 {
+			c.blockedLoopbackPorts[p] = true
+		}
+	}
+	c.mu.Unlock()
+}
+
+func (c *Client) isBlockedPort(port int) bool {
+	if port <= 0 {
+		return false
+	}
+	c.mu.RLock()
+	blocked := c.blockedLoopbackPorts[port]
+	c.mu.RUnlock()
+	return blocked
+}
+
+// CheckTargetAllowed rejects targets that resolve to loopback/unspecified addresses on any blocked local port.
+func (c *Client) CheckTargetAllowed(ctx context.Context, endpoint Endpoint) error {
+	if !c.isBlockedPort(endpoint.Port) {
+		return nil
+	}
+	bareHost := endpoint.BareHost()
+	if IsLoopbackOrUnspecifiedHost(bareHost) {
+		return ErrSelfTargetBlocked
+	}
+	if net.ParseIP(bareHost) == nil {
+		lookupCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+		defer cancel()
+		if ips, err := net.DefaultResolver.LookupIPAddr(lookupCtx, bareHost); err == nil {
+			for _, ipAddr := range ips {
+				if ipAddr.IP.IsLoopback() || ipAddr.IP.IsUnspecified() {
+					return ErrSelfTargetBlocked
+				}
+			}
+		}
+	}
+	return nil
 }
 
 // SetMaxSockets updates the concurrency cap (e.g. 2 for iLO/APC, 4 for routers).
@@ -133,6 +184,10 @@ func (c *Client) SendRequest(ctx context.Context, targetEndpoint string, preset 
 		endpoint.UseTLS = false
 	}
 
+	if err := c.CheckTargetAllowed(ctx, endpoint); err != nil {
+		return UpstreamResponse{}, endpoint, err
+	}
+
 	var lastErr error
 	for attempt := 0; attempt <= defaultMaxRetries; attempt++ {
 		if err := c.limiter.Acquire(ctx); err != nil {
@@ -148,7 +203,7 @@ func (c *Client) SendRequest(ctx context.Context, targetEndpoint string, preset 
 
 		lastErr = err
 		if attempt < defaultMaxRetries && isRetryableError(err) && ctx.Err() == nil {
-			c.log(fmt.Sprintf("[RETRY %d/%d] %s %s (%v)", attempt+1, defaultMaxRetries, req.Method, req.Path, err))
+			c.log(fmt.Sprintf("[RETRY %d/%d] %s %s (%v)", attempt+1, defaultMaxRetries, req.Method, RedactQuery(req.Path), err))
 			select {
 			case <-time.After(retryDelay):
 			case <-ctx.Done():
@@ -175,6 +230,9 @@ func (c *Client) executeWithFallbacks(ctx context.Context, rawTarget string, end
 	resp, err := c.executeSingle(ctx, endpoint, preferLegacy, req, cookieHeader)
 	if err == nil {
 		return resp, endpoint, nil
+	}
+	if errors.Is(err, ErrSelfTargetBlocked) {
+		return UpstreamResponse{}, endpoint, err
 	}
 
 	// If modern TLS 1.3 ClientHello (e.g., ML-KEM / extra extensions) was rejected by old firmware,
@@ -242,7 +300,27 @@ func (c *Client) executeWithFallbacks(ctx context.Context, rawTarget string, end
 }
 
 func (c *Client) executeSingle(ctx context.Context, endpoint Endpoint, preferLegacyTLS bool, req UpstreamRequest, cookieHeader string) (UpstreamResponse, error) {
-	dialer := &net.Dialer{Timeout: defaultConnectTimeout}
+	if err := c.CheckTargetAllowed(ctx, endpoint); err != nil {
+		return UpstreamResponse{}, err
+	}
+
+	dialer := &net.Dialer{
+		Timeout: defaultConnectTimeout,
+		Control: func(_, address string, _ syscall.RawConn) error {
+			host, portStr, splitErr := net.SplitHostPort(address)
+			if splitErr != nil {
+				return nil
+			}
+			port, convErr := strconv.Atoi(portStr)
+			if convErr != nil || !c.isBlockedPort(port) {
+				return nil
+			}
+			if ip := net.ParseIP(host); ip != nil && (ip.IsLoopback() || ip.IsUnspecified()) {
+				return ErrSelfTargetBlocked
+			}
+			return nil
+		},
+	}
 	rawConn, err := dialer.DialContext(ctx, "tcp", endpoint.DialAddress())
 	if err != nil {
 		return UpstreamResponse{}, err
@@ -317,7 +395,7 @@ func isImmediateResetError(err error) bool {
 }
 
 func isTLSHandshakeAlertOrReset(err error) bool {
-	if err == nil || isConnectionRefusedError(err) {
+	if err == nil || isConnectionRefusedError(err) || errors.Is(err, ErrSelfTargetBlocked) {
 		return false
 	}
 	var recordErr tls.RecordHeaderError
@@ -332,7 +410,7 @@ func isTLSHandshakeAlertOrReset(err error) bool {
 }
 
 func isRetryableError(err error) bool {
-	if err == nil || isConnectionRefusedError(err) {
+	if err == nil || isConnectionRefusedError(err) || errors.Is(err, ErrSelfTargetBlocked) {
 		return false
 	}
 	var netErr net.Error

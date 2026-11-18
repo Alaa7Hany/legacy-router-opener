@@ -42,9 +42,12 @@ func TestDesktopPresetsPreserveAuthenticatedNavigation(t *testing.T) {
 			}
 			device := simulatedAdminPage(t, fixture.tlsVersion, fixture.redirectHost)
 			bridge := NewServer(Options{InitialTarget: device.URL})
-			local := httptest.NewServer(bridge)
+			local := httptest.NewServer(bridge.ProxyHandler())
 			defer local.Close()
 			bridge.SetProxyPort(local.Listener.Addr().(*net.TCPAddr).Port)
+			control := httptest.NewServer(bridge.ControlHandler())
+			defer control.Close()
+			bridge.SetControlPort(control.Listener.Addr().(*net.TCPAddr).Port)
 
 			// The client has no cookie jar, as if it dropped the device's login cookie.
 			client := local.Client()
@@ -60,7 +63,11 @@ func TestDesktopPresetsPreserveAuthenticatedNavigation(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			res, err := client.Post(local.URL+"/_bridge/api/config", "application/json", strings.NewReader(string(config)))
+			cfgReq, _ := http.NewRequest(http.MethodPost, control.URL+"/_bridge/api/config", strings.NewReader(string(config)))
+			cfgReq.Header.Set("Content-Type", "application/json")
+			cfgReq.Header.Set("Origin", control.URL)
+			cfgReq.Header.Set("Sec-Fetch-Site", "same-origin")
+			res, err := client.Do(cfgReq)
 			body := requireDeviceResponse(t, res, err, http.StatusOK)
 			var state StateSnapshot
 			if err := json.Unmarshal([]byte(body), &state); err != nil || state.Preset != preset.ID {
@@ -82,7 +89,7 @@ func TestDesktopPresetsPreserveAuthenticatedNavigation(t *testing.T) {
 				t.Fatalf("could not open the next settings page: %q", body)
 			}
 
-			res, err = client.Get(local.URL + "/_bridge/api/state")
+			res, err = client.Get(control.URL + "/_bridge/api/state")
 			body = requireDeviceResponse(t, res, err, http.StatusOK)
 			if strings.Contains(body, simulatedSessionID) {
 				t.Fatal("connection details exposed a session cookie value")
@@ -91,7 +98,10 @@ func TestDesktopPresetsPreserveAuthenticatedNavigation(t *testing.T) {
 				t.Fatal("connection details omitted the session-saved message")
 			}
 
-			res, err = client.Post(local.URL+"/_bridge/api/reset", "application/json", nil)
+			resetReq, _ := http.NewRequest(http.MethodPost, control.URL+"/_bridge/api/reset", nil)
+			resetReq.Header.Set("Origin", control.URL)
+			resetReq.Header.Set("Sec-Fetch-Site", "same-origin")
+			res, err = client.Do(resetReq)
 			requireDeviceResponse(t, res, err, http.StatusOK)
 			res, err = client.Get(local.URL + "/settings/network")
 			requireDeviceResponse(t, res, err, http.StatusUnauthorized)

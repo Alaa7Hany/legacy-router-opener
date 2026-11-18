@@ -5,8 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="light dark">
   <title data-message="error_title">{{.Messages.error_title}}</title>
-  <link rel="stylesheet" href="/_bridge/assets/bridge.css">
-  <link rel="stylesheet" href="/_bridge/assets/error.css">
+  <style>{{.CSS}}</style>
 </head>
 <body>
   <main class="card">
@@ -18,28 +17,19 @@
       <p class="subtitle"><span data-message="device_address">{{.Messages.device_address}}</span> <bdi dir="ltr">{{.Target}}</bdi></p>
       <p class="recovery-hint" data-message="error_help">{{.Messages.error_help}}</p>
     </header>
-    <button id="retry-btn" type="button" class="primary-btn" data-message="try_again">{{.Messages.try_again}}</button>
+    <div class="error-actions">
+      <button id="retry-btn" type="button" class="primary-btn" data-message="try_again">{{.Messages.try_again}}</button>
+      <a id="try-another-link" href="{{.OpenerURL}}?edit=1&amp;lang={{.Language}}" class="secondary-btn" data-preserve-lang data-message="try_another_address">{{.Messages.try_another_address}}</a>
+    </div>
     <div class="disclosures">
-      <details>
-        <summary data-message="try_another_address">{{.Messages.try_another_address}}</summary>
-        <form id="switch-form" class="panel-body" novalidate>
-          <div class="field">
-            <label for="new-target" data-message="device_address">{{.Messages.device_address}}</label>
-            <input id="new-target" name="target" type="text" value="{{.Target}}" dir="ltr" required
-              autocorrect="off" autocapitalize="none" spellcheck="false" aria-describedby="switch-error">
-            <p id="switch-error" class="error-text" role="status" hidden></p>
-          </div>
-          <button id="switch-btn" type="submit" class="secondary-btn" data-message="open_address">{{.Messages.open_address}}</button>
-        </form>
-      </details>
       <details>
         <summary data-message="technical_details">{{.Messages.technical_details}}</summary>
         <pre dir="ltr" lang="en">{{.Message}}</pre>
       </details>
     </div>
-    <footer class="app-footer"><a href="/_bridge" class="link-btn" data-message="back_to_opener">{{.Messages.back_to_opener}}</a></footer>
+    <footer class="app-footer"><a id="back-to-opener-link" href="{{.OpenerURL}}?lang={{.Language}}" class="link-btn" data-preserve-lang data-message="back_to_opener">{{.Messages.back_to_opener}}</a></footer>
   </main>
   <script id="messages" type="application/json">{{.Catalog}}</script>
-  <script src="/_bridge/assets/error.js" type="module"></script>
+  <script>{{.JS}}</script>
 </body>
 </html>

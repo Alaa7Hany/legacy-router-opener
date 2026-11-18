@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -15,11 +16,11 @@ import (
 )
 
 type desktopApp struct {
-	bridge, quit  *http.Server
-	stopping      chan struct{}
-	quitRequested chan struct{}
-	serveErrors   chan error
-	tabs          *tabLifetime
+	proxy, control *http.Server
+	stopping       chan struct{}
+	quitRequested  chan struct{}
+	serveErrors    chan error
+	tabs           *tabLifetime
 }
 
 func run(ctx context.Context, options launchOptions) error {
@@ -49,6 +50,13 @@ func run(ctx context.Context, options launchOptions) error {
 }
 
 func startApp(options launchOptions) (*desktopApp, string, error) {
+	initialTarget := strings.TrimSpace(options.target)
+	if initialTarget != "" {
+		if _, err := upstream.ValidateTarget(initialTarget); err != nil {
+			return nil, "", fmt.Errorf("invalid target: %w", err)
+		}
+	}
+
 	requestedPort := validProxyPort(options.port)
 	unlock, err := lockStartup(requestedPort)
 	if err != nil {
@@ -56,37 +64,44 @@ func startApp(options launchOptions) (*desktopApp, string, error) {
 	}
 	defer unlock()
 
-	listeners, port, existing, err := listenWithFallback(requestedPort)
+	listeners, port, existing, existingControlPort, err := listenWithFallback(requestedPort)
 	if err != nil {
 		return nil, "", err
 	}
-	openerURL := fmt.Sprintf("http://localhost:%d/_bridge", port)
-	launchURL := openerURL
-	if options.openRouter {
-		launchURL = fmt.Sprintf("http://localhost:%d/", port)
-	}
 	if existing {
+		openerPort := existingControlPort
+		if openerPort <= 0 {
+			openerPort = port
+		}
+		openerURL := fmt.Sprintf("http://localhost:%d/_bridge", openerPort)
+		launchURL := openerURL
+		if options.openRouter {
+			launchURL = fmt.Sprintf("http://localhost:%d/", port)
+		}
 		fmt.Printf("[INFO] Reusing Router Page Opener on port %d.\n", port)
 		return nil, launchURL, nil
 	}
 
-	quitListener, err := net.Listen("tcp4", "127.0.0.1:0")
+	controlListeners, controlPort, err := listenControlWithFallback(port)
 	if err != nil {
-		for _, listener := range listeners {
-			_ = listener.Close()
-		}
-		return nil, "", fmt.Errorf("listen for browser Quit requests: %w", err)
+		closeListeners(listeners)
+		return nil, "", err
+	}
+	openerURL := fmt.Sprintf("http://localhost:%d/_bridge", controlPort)
+	launchURL := openerURL
+	if options.openRouter {
+		launchURL = fmt.Sprintf("http://localhost:%d/", port)
 	}
 
 	detectedGateway := gateway.DetectDefaultGateway()
-	target := options.target
+	target := initialTarget
 	if target == "" {
 		target = detectedGateway
 	}
 	app := &desktopApp{
 		stopping:      make(chan struct{}),
 		quitRequested: make(chan struct{}),
-		serveErrors:   make(chan error, len(listeners)+1),
+		serveErrors:   make(chan error, len(listeners)+len(controlListeners)),
 	}
 	requestStop := sync.OnceFunc(func() {
 		close(app.quitRequested)
@@ -96,33 +111,53 @@ func startApp(options launchOptions) (*desktopApp, string, error) {
 		startupTimeout = openerStartupTimeout
 	}
 	app.tabs = newTabLifetime(startupTimeout, requestStop)
-	quitHost := quitListener.Addr().String()
-	quit := newQuitHandler(quitHost, openerURL, requestStop)
+	quit := newQuitHandler(controlPort, requestStop)
 	quit.watchTab = app.tabs.connect
 	quit.stopping = app.stopping
 	bridge := proxy.NewServer(proxy.Options{
 		ProxyPort:       port,
+		ControlPort:     controlPort,
+		RequestedPort:   requestedPort,
 		InitialTarget:   target,
 		InitialPresetID: options.preset,
 		DetectedGateway: detectedGateway,
 		OnStdoutLog:     func(line string) { fmt.Println(line) },
-		QuitURL:         "http://" + quitHost + quitPath,
+		OnProxyActivity: app.tabs.recordProxyActivity,
+		QuitURL:         quitPath,
 		Stopping:        app.stopping,
 		WatchOpenerTab:  app.tabs.connect,
 	})
-	app.bridge = &http.Server{
-		Handler:           withInstancePort(bridge, requestedPort),
+	if initialTarget != "" {
+		if err := bridge.CheckTargetAllowed(initialTarget); err != nil {
+			app.tabs.close()
+			closeListeners(listeners)
+			closeListeners(controlListeners)
+			return nil, "", err
+		}
+	}
+
+	controlHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == quitPath || strings.HasPrefix(r.URL.Path, quitPath+"/") {
+			quit.ServeHTTP(w, r)
+			return
+		}
+		bridge.ControlHandler().ServeHTTP(w, r)
+	})
+
+	app.proxy = &http.Server{
+		Handler:           withInstancePort(bridge.ProxyHandler(), requestedPort),
 		ReadHeaderTimeout: 30 * time.Second,
 	}
-	app.quit = &http.Server{
-		Handler:      quit,
-		ReadTimeout:  5 * time.Second,
-		WriteTimeout: 5 * time.Second,
+	app.control = &http.Server{
+		Handler:           controlHandler,
+		ReadHeaderTimeout: 30 * time.Second,
 	}
 	for _, listener := range listeners {
-		go app.serve(app.bridge, listener)
+		go app.serve(app.proxy, listener)
 	}
-	go app.serve(app.quit, quitListener)
+	for _, listener := range controlListeners {
+		go app.serve(app.control, listener)
+	}
 
 	snapshot := bridge.Snapshot()
 	fmt.Printf("Router Page Opener\nGateway: %s\nTarget: %s (%s)\nOpener Page: %s\nRouter Page: http://localhost:%d/\nPress Ctrl+C or use Quit app to stop.\n",
@@ -139,11 +174,11 @@ func (app *desktopApp) serve(server *http.Server, listener net.Listener) {
 func (app *desktopApp) shutdown() {
 	app.tabs.close()
 	close(app.stopping)
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 	defer cancel()
 
 	var group sync.WaitGroup
-	for _, server := range []*http.Server{app.bridge, app.quit} {
+	for _, server := range []*http.Server{app.proxy, app.control} {
 		group.Go(func() {
 			if err := server.Shutdown(ctx); err != nil {
 				_ = server.Close()

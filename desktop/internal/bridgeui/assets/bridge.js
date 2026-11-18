@@ -22,10 +22,19 @@ import { activateLanguage } from './locale.js';
   const optionsPanel = document.getElementById('options-panel');
 
   let presets = [];
+  let serverProxyPort = 8080;
   let serverTarget = '';
   let serverPreset = 'auto';
   let userEditedTarget = false;
   let userEditedPreset = false;
+
+  function routerRootURL() {
+    let host = window.location.hostname || 'localhost';
+    if (host.includes(':') && !host.startsWith('[')) {
+      host = '[' + host + ']';
+    }
+    return 'http://' + host + ':' + serverProxyPort + '/';
+  }
 
   const locale = activateLanguage(() => {
     updatePresetLabels();
@@ -123,6 +132,10 @@ import { activateLanguage } from './locale.js';
   function applyState(state) {
     if (!state) return;
 
+    if (typeof state.proxyPort === 'number' && state.proxyPort > 0) {
+      serverProxyPort = state.proxyPort;
+    }
+
     if (presets.length === 0 && Array.isArray(state.presets)) {
       presets = state.presets;
       for (const p of presets) {
@@ -183,7 +196,7 @@ import { activateLanguage } from './locale.js';
     const needsConfigUpdate = (nextTarget !== serverTarget) || (nextPreset !== serverPreset);
 
     if (openDashboard && !needsConfigUpdate) {
-      window.open('/', '_blank');
+      window.open(routerRootURL(), '_blank', 'noopener');
       return;
     }
 
@@ -205,7 +218,14 @@ import { activateLanguage } from './locale.js';
       if (!res.ok) {
         if (pendingTab) pendingTab.close();
         optionsPanel.open = true;
-        showBanner('changes_failed', 'error');
+        const errKey = (data && data.errorKey && locale.text(data.errorKey)) ? data.errorKey : 'changes_failed';
+        showBanner(errKey, 'error');
+        if (errKey !== 'changes_failed') {
+          targetInput.setAttribute('aria-invalid', 'true');
+          locale.setMessage(targetError, errKey);
+          targetError.hidden = false;
+          targetInput.focus();
+        }
         return;
       }
       if (targetInput.value.trim() === nextTarget) userEditedTarget = false;
@@ -214,10 +234,12 @@ import { activateLanguage } from './locale.js';
       showBanner('changes_saved', 'success');
 
       if (openDashboard) {
+        const url = routerRootURL();
         if (pendingTab) {
-          pendingTab.location.replace('/');
+          pendingTab.opener = null;
+          pendingTab.location.replace(url);
         } else {
-          window.location.href = '/';
+          window.location.href = url;
         }
       }
     } catch {
@@ -309,6 +331,10 @@ import { activateLanguage } from './locale.js';
   }
 
   hydrateInitialState();
+  if (new URLSearchParams(window.location.search).get('edit') === '1') {
+    optionsPanel.open = true;
+    targetInput.focus();
+  }
   window.addEventListener('pageshow', connectSSE);
   window.addEventListener('pagehide', () => events?.close());
 }

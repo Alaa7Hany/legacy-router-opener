@@ -67,6 +67,8 @@ var (
 	singleLabelRedirectRegex = regexp.MustCompile(`(?i)^https?://([a-z0-9-]+)(:\d+)?(/.*)?$`)
 )
 
+const authorityBoundary = `($|[^A-Za-z0-9._:@-])`
+
 // IsStaticAsset returns true for cacheable router static resources (.gif, .png, .css, .js, etc.).
 func IsStaticAsset(requestPath string) bool {
 	ext := cleanPathExt(requestPath)
@@ -144,16 +146,16 @@ func RewriteResponseBody(body string, routerEndpoint string, proxyPort int, prox
 	proxyAuthority := fmt.Sprintf("%s:%d", proxyHost, proxyPort)
 
 	// 1. Standard URLs: http://192.168.1.1:443 or https://192.168.1.1
-	urlRegex := regexp.MustCompile(`(?i)https?://` + escapedHost + `(:\d+)?`)
-	modified := urlRegex.ReplaceAllString(body, "http://"+proxyAuthority)
+	urlRegex := regexp.MustCompile(`(?i)https?://` + escapedHost + `(?::\d+)?` + authorityBoundary)
+	modified := urlRegex.ReplaceAllString(body, "http://"+proxyAuthority+"${1}")
 
 	// 2. JSON / inline JS escaped URLs: https:\/\/192.168.1.1
-	escapedURLRegex := regexp.MustCompile(`(?i)https?:\\/\\/` + escapedHost + `(:\d+)?`)
-	modified = escapedURLRegex.ReplaceAllString(modified, `http:\/\/`+proxyAuthority)
+	escapedURLRegex := regexp.MustCompile(`(?i)https?:\\/\\/` + escapedHost + `(?::\d+)?` + authorityBoundary)
+	modified = escapedURLRegex.ReplaceAllString(modified, `http:\/\/`+proxyAuthority+"${1}")
 
 	// 3. Protocol-relative URLs preceded by quote or parenthesis: '//192.168.1.1:443' or (//192.168.1.1)
-	protoRelRegex := regexp.MustCompile(`(?i)(['"\(])//` + escapedHost + `(:\d+)?`)
-	modified = protoRelRegex.ReplaceAllString(modified, "${1}//"+proxyAuthority)
+	protoRelRegex := regexp.MustCompile(`(?i)(['"\(])//` + escapedHost + `(?::\d+)?` + authorityBoundary)
+	modified = protoRelRegex.ReplaceAllString(modified, "${1}//"+proxyAuthority+"${2}")
 
 	// 4. Bare quoted router IP literals ('192.168.1.1' or "192.168.1.1:443")
 	singleQuotedRegex := regexp.MustCompile(`'` + escapedHost + `(:\d+)?'`)
@@ -180,14 +182,14 @@ func RewriteRedirectLocation(location string, routerEndpoint string, proxyPort i
 	escapedHost := regexp.QuoteMeta(targetHost)
 	proxyBase := fmt.Sprintf("http://%s:%d", proxyHost, proxyPort)
 
-	urlRegex := regexp.MustCompile(`(?i)https?://` + escapedHost + `(:\d+)?`)
+	urlRegex := regexp.MustCompile(`(?i)^https?://` + escapedHost + `(?::\d+)?` + authorityBoundary)
 	if urlRegex.MatchString(trimmed) {
-		return urlRegex.ReplaceAllString(trimmed, proxyBase)
+		return urlRegex.ReplaceAllString(trimmed, proxyBase+"${1}")
 	}
 
-	protoRelRegex := regexp.MustCompile(`(?i)^//` + escapedHost + `(:\d+)?`)
+	protoRelRegex := regexp.MustCompile(`(?i)^//` + escapedHost + `(?::\d+)?` + authorityBoundary)
 	if protoRelRegex.MatchString(trimmed) {
-		return protoRelRegex.ReplaceAllString(trimmed, proxyBase)
+		return protoRelRegex.ReplaceAllString(trimmed, proxyBase+"${1}")
 	}
 
 	// Handle Dell iDRAC / HPE iLO redirects to internal non-FQDN hostnames (e.g., https://idrac-123/login.html).

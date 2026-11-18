@@ -13,35 +13,45 @@ import (
 )
 
 func TestQuitRequiresHostOriginAndToken(t *testing.T) {
+	const controlPort = 12345
 	const host = "127.0.0.1:12345"
-	const opener = "http://localhost:8080/_bridge"
 	stopped := false
-	handler := newQuitHandler(host, opener, func() { stopped = true })
-	req := httptest.NewRequest(http.MethodGet, "http://"+host+quitPath, nil)
+	handler := newQuitHandler(controlPort, func() { stopped = true })
+	req := httptest.NewRequest(http.MethodGet, "http://"+host+quitPath+"?lang=ar", nil)
 	page := httptest.NewRecorder()
 	handler.ServeHTTP(page, req)
 	if page.Code != http.StatusOK ||
 		!strings.Contains(page.Header().Get("Content-Security-Policy"), "frame-ancestors 'none'") ||
+		!strings.Contains(page.Body.String(), `<meta name="color-scheme" content="light dark">`) ||
 		!strings.Contains(page.Body.String(), handler.token) ||
-		!strings.Contains(page.Body.String(), opener) || stopped {
-		t.Fatal("GET should show a protected confirmation and leave the app running")
+		!strings.Contains(page.Body.String(), "http://"+host+"/_bridge?lang=ar") || stopped {
+		t.Fatal("GET should show a protected confirmation preserving loopback host and lang")
 	}
 
 	for _, tc := range []struct {
-		name, host, origin, token string
-		status                    int
+		name, host, origin, sfs, token string
+		status                         int
 	}{
-		{"different host", "localhost:12345", "http://" + host, handler.token, http.StatusNotFound},
-		{"proxy origin", host, "http://127.0.0.1:8080", handler.token, http.StatusForbidden},
-		{"external origin", host, "https://example.org", handler.token, http.StatusForbidden},
-		{"missing origin", host, "", handler.token, http.StatusForbidden},
-		{"invalid token", host, "http://" + host, "different-token", http.StatusForbidden},
-		{"authorized", host, "http://" + host, handler.token, http.StatusOK},
+		{"evil rebinding host", "evil.example:12345", "http://" + host, "same-origin", handler.token, http.StatusNotFound},
+		{"wrong loopback port", "localhost:8080", "http://" + host, "same-origin", handler.token, http.StatusNotFound},
+		{"mismatched loopback origin", host, "http://localhost:12345", "same-origin", handler.token, http.StatusForbidden},
+		{"proxy origin", host, "http://127.0.0.1:8080", "same-site", handler.token, http.StatusForbidden},
+		{"external origin", host, "https://example.org", "cross-site", handler.token, http.StatusForbidden},
+		{"cross-site sec-fetch-site", host, "http://" + host, "cross-site", handler.token, http.StatusForbidden},
+		{"missing origin", host, "", "same-origin", handler.token, http.StatusForbidden},
+		{"invalid token", host, "http://" + host, "same-origin", "different-token", http.StatusForbidden},
+		{"authorized", host, "http://" + host, "same-origin", handler.token, http.StatusOK},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			req := httptest.NewRequest(http.MethodPost, "http://"+tc.host+quitPath,
 				strings.NewReader(url.Values{"token": {tc.token}}.Encode()))
-			req.Header.Set("Origin", tc.origin)
+			req.Host = tc.host
+			if tc.origin != "" {
+				req.Header.Set("Origin", tc.origin)
+			}
+			if tc.sfs != "" {
+				req.Header.Set("Sec-Fetch-Site", tc.sfs)
+			}
 			req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 			result := httptest.NewRecorder()
 			handler.ServeHTTP(result, req)
@@ -62,7 +72,16 @@ func TestQuitClosesEventStreamAndListeners(t *testing.T) {
 	}
 	portNumber := available.Addr().(*net.TCPAddr).Port
 	available.Close()
-	app, opener, err := startApp(launchOptions{port: portNumber, noBrowser: true})
+
+	// Use an unreachable local port so tests never touch a real LAN router.
+	closedTarget, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	closedTargetAddr := closedTarget.Addr().String()
+	closedTarget.Close()
+
+	app, opener, err := startApp(launchOptions{port: portNumber, target: "http://" + closedTargetAddr, noBrowser: true})
 	if err != nil || app == nil {
 		t.Fatalf("start app = (%v, %v)", app, err)
 	}
@@ -76,7 +95,12 @@ func TestQuitClosesEventStreamAndListeners(t *testing.T) {
 		close(stopped)
 	}()
 
-	client := &http.Client{Timeout: 4 * time.Second}
+	client := &http.Client{
+		Timeout: 4 * time.Second,
+		CheckRedirect: func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
 	fetch := func(address string) string {
 		t.Helper()
 		resp, err := client.Get(address)
@@ -90,20 +114,42 @@ func TestQuitClosesEventStreamAndListeners(t *testing.T) {
 		}
 		return string(body)
 	}
-	page := fetch(opener)
-	_, link, ok := strings.Cut(page, `id="quit-link" class="link-btn" href="http://127.0.0.1:`)
-	port, _, foundEnd := strings.Cut(link, quitPath+`?lang=en"`)
-	if !ok || !foundEnd {
-		t.Fatal("opener omitted Quit link")
+
+	// Verify proxy origin is distinct from control origin and cannot reach /quit.
+	proxyPingResp, err := client.Get(fmt.Sprintf("http://localhost:%d/_bridge/api/ping", portNumber))
+	if err != nil {
+		t.Fatal(err)
 	}
-	quitHost := "127.0.0.1:" + port
-	origin := "http://" + quitHost
+	_ = proxyPingResp.Body.Close()
+	controlPort := proxyPingResp.Header.Get(controlPortField)
+	openerURL, _ := url.Parse(opener)
+	if controlPort == "" || controlPort == fmt.Sprintf("%d", portNumber) || openerURL.Port() != controlPort {
+		t.Fatalf("expected distinct control port matching opener URL %q, got header=%q", opener, controlPort)
+	}
+
+	proxyQuitResp, err := client.Get(fmt.Sprintf("http://localhost:%d/quit", portNumber))
+	if err != nil {
+		t.Fatal(err)
+	}
+	proxyQuitBody, _ := io.ReadAll(proxyQuitResp.Body)
+	_ = proxyQuitResp.Body.Close()
+	if proxyQuitResp.StatusCode != http.StatusBadGateway || strings.Contains(string(proxyQuitBody), `action="/quit`) {
+		t.Fatalf("/quit must not be reachable on proxy origin (status=%d)", proxyQuitResp.StatusCode)
+	}
+
+	page := fetch(opener)
+	if !strings.Contains(page, `id="quit-link" class="link-btn" href="/quit?lang=en"`) {
+		t.Fatal("opener omitted relative Quit link")
+	}
+	controlHost := "localhost:" + controlPort
+	origin := "http://" + controlHost
 	quitURL := origin + quitPath + "?lang=ar"
 	confirmation := fetch(quitURL)
 	if !strings.Contains(confirmation, `<html lang="ar" dir="rtl">`) ||
 		!strings.Contains(confirmation, `action="/quit?lang=ar"`) ||
+		!strings.Contains(confirmation, `href="http://`+controlHost+`/_bridge?lang=ar"`) ||
 		!strings.Contains(confirmation, "هل تريد إغلاق التطبيق؟") {
-		t.Fatal("confirmation did not carry the selected language into the form")
+		t.Fatal("confirmation did not carry the selected language and Cancel URL")
 	}
 	_, tokenField, ok := strings.Cut(confirmation, `name="token" value="`)
 	token, _, _ := strings.Cut(tokenField, `"`)
@@ -135,6 +181,7 @@ func TestQuitClosesEventStreamAndListeners(t *testing.T) {
 		t.Fatal(err)
 	}
 	req.Header.Set("Origin", origin)
+	req.Header.Set("Sec-Fetch-Site", "same-origin")
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	result, err := client.Do(req)
 	if err != nil {
@@ -156,8 +203,7 @@ func TestQuitClosesEventStreamAndListeners(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("shutdown stalled with an active event stream")
 	}
-	openerURL, _ := url.Parse(opener)
-	for _, host := range []string{fmt.Sprintf("127.0.0.1:%s", openerURL.Port()), quitHost} {
+	for _, host := range []string{fmt.Sprintf("127.0.0.1:%d", portNumber), "127.0.0.1:" + controlPort} {
 		conn, err := net.DialTimeout("tcp", host, time.Second)
 		if err == nil {
 			conn.Close()

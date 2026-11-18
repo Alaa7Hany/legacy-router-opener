@@ -470,17 +470,22 @@ input[aria-invalid="true"] {
 
 .logs-meta {
   display: flex;
-  align-items: center;
+  align-items: baseline;
   justify-content: space-between;
   gap: 0.5rem;
   font-size: 0.78rem;
   color: var(--text-muted);
 }
 
+.logs-meta > .link-btn {
+  flex: none;
+}
+
 .tls-line {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  min-width: 0;
+  flex: 1;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 .log-box {

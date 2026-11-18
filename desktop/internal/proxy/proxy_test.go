@@ -204,7 +204,7 @@ func TestEndToEndLegacyTLS10AndStaticCaching(t *testing.T) {
 		InitialPresetID: "huawei-zte",
 		DetectedGateway: "192.168.1.1",
 	})
-	ts := httptest.NewServer(srv)
+	ts := httptest.NewServer(srv.ProxyHandler())
 	defer ts.Close()
 
 	var proxyPort int
@@ -297,8 +297,9 @@ func TestPlainHTTPFallbackOnCustomPort(t *testing.T) {
 		InitialTarget:   hostPort,
 		InitialPresetID: "auto",
 	})
-	ts := httptest.NewServer(srv)
+	ts := httptest.NewServer(srv.ProxyHandler())
 	defer ts.Close()
+	srv.SetProxyPort(ts.Listener.Addr().(*net.TCPAddr).Port)
 
 	resp, err := http.Get(ts.URL + "/")
 	if err != nil {
@@ -371,8 +372,20 @@ func TestBridgeControlAPIAndSessionReset(t *testing.T) {
 	})
 	srv.activeJar().SaveCookiesFromHeaders([]string{"SessionID=stuck-session; Path=/"})
 
-	ts := httptest.NewServer(srv)
+	ts := httptest.NewServer(srv.ControlHandler())
 	defer ts.Close()
+	srv.SetControlPort(ts.Listener.Addr().(*net.TCPAddr).Port)
+
+	postJSON := func(path, body string) (*http.Response, error) {
+		req, err := http.NewRequest(http.MethodPost, ts.URL+path, strings.NewReader(body))
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Origin", ts.URL)
+		req.Header.Set("Sec-Fetch-Site", "same-origin")
+		return http.DefaultClient.Do(req)
+	}
 
 	// 1. Launchpad HTML renders
 	res, err := http.Get(ts.URL + "/_bridge")
@@ -403,7 +416,7 @@ func TestBridgeControlAPIAndSessionReset(t *testing.T) {
 	}
 
 	// 3. Invalid config rejected
-	badRes, err := http.Post(ts.URL+"/_bridge/api/config", "application/json", strings.NewReader(`{"target":"bad host"}`))
+	badRes, err := postJSON("/_bridge/api/config", `{"target":"bad host"}`)
 	if err != nil {
 		t.Fatalf("POST /_bridge/api/config failed: %v", err)
 	}
@@ -413,11 +426,7 @@ func TestBridgeControlAPIAndSessionReset(t *testing.T) {
 	}
 
 	// 4. Valid config switches target and preset (HPE iLO caps sockets to 2, disables Huawei cookies)
-	cfgRes, err := http.Post(
-		ts.URL+"/_bridge/api/config",
-		"application/json",
-		strings.NewReader(`{"target":"10.10.10.50:443","preset":"ilo"}`),
-	)
+	cfgRes, err := postJSON("/_bridge/api/config", `{"target":"10.10.10.50:443","preset":"ilo"}`)
 	if err != nil {
 		t.Fatalf("POST /_bridge/api/config failed: %v", err)
 	}
@@ -439,9 +448,20 @@ func TestBridgeControlAPIAndSessionReset(t *testing.T) {
 		t.Fatalf("expected updated target hydrated in /_bridge HTML")
 	}
 
+	// Also verify explicit ?lang=ar query parameter overrides Accept-Language on /_bridge.
+	arRes, err := http.Get(ts.URL + "/_bridge?lang=ar")
+	if err != nil {
+		t.Fatalf("GET /_bridge?lang=ar failed: %v", err)
+	}
+	arBytes, _ := io.ReadAll(arRes.Body)
+	_ = arRes.Body.Close()
+	if !strings.Contains(string(arBytes), `<html lang="ar" dir="rtl">`) {
+		t.Fatalf("expected ?lang=ar to render Arabic RTL HTML")
+	}
+
 	// 5. Session reset clears cookies & emits browser eviction headers
 	srv.activeJar().SaveCookiesFromHeaders([]string{"iLOSession=abc; Path=/"})
-	resetRes, err := http.Post(ts.URL+"/_bridge/api/reset", "application/json", nil)
+	resetRes, err := postJSON("/_bridge/api/reset", "")
 	if err != nil {
 		t.Fatalf("POST /_bridge/api/reset failed: %v", err)
 	}
@@ -462,24 +482,334 @@ func TestDesktopPagesUseBrowserLanguage(t *testing.T) {
 	}
 	target := "http://" + conn.Addr().String()
 	conn.Close()
-	srv := NewServer(Options{InitialTarget: target})
+	srv := NewServer(Options{
+		ProxyPort:     8080,
+		ControlPort:   8180,
+		InitialTarget: target,
+	})
 	for _, tc := range []struct {
-		path, label string
-		status      int
+		handler http.Handler
+		url     string
+		label   string
+		status  int
 	}{
-		{"/_bridge", "فتح صفحة الراوتر", http.StatusOK},
-		{"/", "تعذّر فتح صفحة الجهاز", http.StatusBadGateway},
+		{srv.ControlHandler(), "http://localhost:8180/_bridge", "فتح صفحة الراوتر", http.StatusOK},
+		{srv.ProxyHandler(), "http://127.0.0.1:8080/", "تعذّر فتح صفحة الجهاز", http.StatusBadGateway},
 	} {
-		req := httptest.NewRequest(http.MethodGet, tc.path, nil)
+		req := httptest.NewRequest(http.MethodGet, tc.url, nil)
 		req.Header.Set("Accept-Language", "ar-EG,en;q=0.8")
 		res := httptest.NewRecorder()
-		srv.ServeHTTP(res, req)
+		tc.handler.ServeHTTP(res, req)
 		body := res.Body.String()
 		if res.Code != tc.status || !strings.Contains(body, `<html lang="ar" dir="rtl">`) ||
 			!strings.Contains(body, `data-language="ar" aria-pressed="true"`) ||
 			!strings.Contains(body, tc.label) || !strings.Contains(body, `dir="ltr">`+target+`</bdi>`) {
-			t.Errorf("%s did not render the expected Arabic page and left-to-right address (status %d)", tc.path, res.Code)
+			t.Errorf("%s did not render the expected Arabic page and left-to-right address (status %d)", tc.url, res.Code)
 		}
+		if tc.status == http.StatusBadGateway {
+			if !strings.Contains(body, `href="http://127.0.0.1:8180/_bridge?edit=1&amp;lang=ar"`) {
+				t.Errorf("error page did not point to control opener with matching loopback host and lang")
+			}
+			if res.Header().Get("Cache-Control") != "no-store" {
+				t.Errorf("error page missing Cache-Control: no-store")
+			}
+		}
+	}
+}
+
+func TestOriginSeparationCSRFAndDNSRebinding(t *testing.T) {
+	srv := NewServer(Options{
+		ProxyPort:     8080,
+		ControlPort:   8180,
+		RequestedPort: 8080,
+		InitialTarget: "192.168.1.1",
+	})
+	proxyH := srv.ProxyHandler()
+	controlH := srv.ControlHandler()
+
+	// 1. Proxy server does NOT serve control APIs, assets, SSE, or /quit, and redirects /_bridge to control origin.
+	redirReq := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:8080/_bridge?lang=ar", nil)
+	redirRes := httptest.NewRecorder()
+	proxyH.ServeHTTP(redirRes, redirReq)
+	if redirRes.Code != http.StatusFound || redirRes.Header().Get("Location") != "http://127.0.0.1:8180/_bridge?lang=ar" {
+		t.Fatalf("GET /_bridge on proxy = (%d, %q), want 302 -> control origin", redirRes.Code, redirRes.Header().Get("Location"))
+	}
+
+	pingReq := httptest.NewRequest(http.MethodGet, "http://localhost:8080/_bridge/api/ping", nil)
+	pingRes := httptest.NewRecorder()
+	proxyH.ServeHTTP(pingRes, pingReq)
+	if pingRes.Code != http.StatusOK ||
+		pingRes.Header().Get("X-Legacy-Router-Proxy") != "1" ||
+		pingRes.Header().Get("X-Legacy-Router-Requested-Port") != "8080" ||
+		pingRes.Header().Get("X-Legacy-Router-Control-Port") != "8180" {
+		t.Fatalf("ping headers missing on proxy: status=%d headers=%v", pingRes.Code, pingRes.Header())
+	}
+
+	for _, blockedOnProxy := range []struct{ method, path string }{
+		{http.MethodGet, "/_bridge/api/state"},
+		{http.MethodPost, "/_bridge/api/config"},
+		{http.MethodPost, "/_bridge/api/reset"},
+		{http.MethodGet, "/_bridge/events"},
+		{http.MethodGet, "/_bridge/assets/bridge.js"},
+	} {
+		req := httptest.NewRequest(blockedOnProxy.method, "http://localhost:8080"+blockedOnProxy.path, nil)
+		res := httptest.NewRecorder()
+		proxyH.ServeHTTP(res, req)
+		if res.Code != http.StatusNotFound {
+			t.Errorf("proxy %s %s = %d, want 404", blockedOnProxy.method, blockedOnProxy.path, res.Code)
+		}
+	}
+
+	// 2. DNS rebinding Host rejection on both Proxy and Control servers.
+	for _, tc := range []struct {
+		name    string
+		handler http.Handler
+		host    string
+		path    string
+		want    int
+	}{
+		{"evil host on proxy", proxyH, "attacker.evil.example:8080", "/_bridge/api/ping", http.StatusNotFound},
+		{"control host on proxy", proxyH, "localhost:8180", "/_bridge/api/ping", http.StatusNotFound},
+		{"evil host on control", controlH, "attacker.evil.example:8180", "/_bridge/api/state", http.StatusNotFound},
+		{"proxy host on control", controlH, "localhost:8080", "/_bridge/api/state", http.StatusNotFound},
+		{"uppercase localhost allowed on control", controlH, "LOCALHOST:8180", "/_bridge/api/ping", http.StatusOK},
+		{"IPv6 loopback allowed on control", controlH, "[::1]:8180", "/_bridge/api/ping", http.StatusOK},
+	} {
+		req := httptest.NewRequest(http.MethodGet, "http://"+tc.host+tc.path, nil)
+		req.Host = tc.host
+		res := httptest.NewRecorder()
+		tc.handler.ServeHTTP(res, req)
+		if res.Code != tc.want {
+			t.Errorf("%s: got status %d, want %d", tc.name, res.Code, tc.want)
+		}
+	}
+
+	// 3. CSRF rejection on all state-changing control endpoints.
+	for _, endpoint := range []string{
+		"/_bridge/api/config",
+		"/_bridge/api/reset",
+		"/_bridge/api/detect-gateway",
+		"/_bridge/api/logs/clear",
+	} {
+		for _, tc := range []struct {
+			name, origin, sfs, ct string
+			want                  int
+		}{
+			{"missing origin", "", "same-origin", "application/json", http.StatusForbidden},
+			{"proxy origin", "http://localhost:8080", "same-site", "application/json", http.StatusForbidden},
+			{"external origin", "https://evil.example", "cross-site", "application/json", http.StatusForbidden},
+			{"cross-site sec-fetch-site", "http://localhost:8180", "cross-site", "application/json", http.StatusForbidden},
+			{"same-site sec-fetch-site", "http://localhost:8180", "same-site", "application/json", http.StatusForbidden},
+		} {
+			req := httptest.NewRequest(http.MethodPost, "http://localhost:8180"+endpoint, strings.NewReader(`{"target":"192.168.1.2"}`))
+			if tc.origin != "" {
+				req.Header.Set("Origin", tc.origin)
+			}
+			if tc.sfs != "" {
+				req.Header.Set("Sec-Fetch-Site", tc.sfs)
+			}
+			req.Header.Set("Content-Type", tc.ct)
+			res := httptest.NewRecorder()
+			controlH.ServeHTTP(res, req)
+			if res.Code != tc.want {
+				t.Errorf("%s (%s): status = %d, want %d", endpoint, tc.name, res.Code, tc.want)
+			}
+		}
+	}
+
+	// Reject text/plain simple CORS POST on /_bridge/api/config.
+	plainReq := httptest.NewRequest(http.MethodPost, "http://localhost:8180/_bridge/api/config", strings.NewReader(`{"target":"192.168.1.2"}`))
+	plainReq.Header.Set("Origin", "http://localhost:8180")
+	plainReq.Header.Set("Sec-Fetch-Site", "same-origin")
+	plainReq.Header.Set("Content-Type", "text/plain")
+	plainRes := httptest.NewRecorder()
+	controlH.ServeHTTP(plainRes, plainReq)
+	if plainRes.Code != http.StatusUnsupportedMediaType {
+		t.Fatalf("text/plain POST /config status = %d, want 415", plainRes.Code)
+	}
+
+	// Reject self-targeting proxyPort and controlPort in UpdateTarget & /_bridge/api/config.
+	for _, selfTarget := range []string{"127.0.0.1:8080", "localhost:8180", "[::1]:8080", "0.0.0.0:8180"} {
+		selfReq := httptest.NewRequest(http.MethodPost, "http://localhost:8180/_bridge/api/config",
+			strings.NewReader(fmt.Sprintf(`{"target":%q}`, selfTarget)))
+		selfReq.Header.Set("Origin", "http://localhost:8180")
+		selfReq.Header.Set("Sec-Fetch-Site", "same-origin")
+		selfReq.Header.Set("Content-Type", "application/json")
+		selfRes := httptest.NewRecorder()
+		controlH.ServeHTTP(selfRes, selfReq)
+		if selfRes.Code != http.StatusBadRequest || !strings.Contains(selfRes.Body.String(), `"address_self_blocked"`) {
+			t.Errorf("self target %q: status=%d body=%s", selfTarget, selfRes.Code, selfRes.Body.String())
+		}
+	}
+}
+
+func TestStaticCacheSafetyAndInvalidation(t *testing.T) {
+	var upstreamHits atomic.Int32
+	var mode atomic.Value
+	mode.Store("no-store")
+
+	upstreamSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n := upstreamHits.Add(1)
+		m := mode.Load().(string)
+		switch m {
+		case "no-store":
+			w.Header().Set("Cache-Control", "no-store")
+		case "private":
+			w.Header().Set("Cache-Control", "private, max-age=60")
+		case "pragma":
+			w.Header().Set("Pragma", "no-cache")
+		case "set-cookie":
+			w.Header().Set("Set-Cookie", "Tok=1")
+		}
+		w.Header().Set("Content-Type", "application/javascript")
+		_, _ = fmt.Fprintf(w, "var hit=%d;", n)
+	}))
+	defer upstreamSrv.Close()
+
+	srv := NewServer(Options{InitialTarget: upstreamSrv.URL})
+	proxyTs := httptest.NewServer(srv.ProxyHandler())
+	defer proxyTs.Close()
+	srv.SetProxyPort(proxyTs.Listener.Addr().(*net.TCPAddr).Port)
+
+	for _, tc := range []string{"no-store", "private", "pragma", "set-cookie"} {
+		mode.Store(tc)
+		before := upstreamHits.Load()
+		for i := 0; i < 2; i++ {
+			resp, err := http.Get(proxyTs.URL + "/app.js")
+			if err != nil {
+				t.Fatal(err)
+			}
+			_ = resp.Body.Close()
+			if cc := resp.Header.Get("Cache-Control"); strings.Contains(cc, "public, max-age=3600") {
+				t.Fatalf("mode %s injected public Cache-Control: %q", tc, cc)
+			}
+		}
+		if got := upstreamHits.Load() - before; got != 2 {
+			t.Fatalf("mode %s should not cache static response (upstream hits=%d, want 2)", tc, got)
+		}
+	}
+
+	// Authorization header must also bypass static cache.
+	mode.Store("cacheable")
+	beforeAuth := upstreamHits.Load()
+	for i := 0; i < 2; i++ {
+		req, _ := http.NewRequest(http.MethodGet, proxyTs.URL+"/auth.js", nil)
+		req.Header.Set("Authorization", "Basic YWRtaW46c2VjcmV0")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = resp.Body.Close()
+		if cc := resp.Header.Get("Cache-Control"); strings.Contains(cc, "public, max-age=3600") {
+			t.Fatalf("Authorization request injected public Cache-Control: %q", cc)
+		}
+	}
+	if got := upstreamHits.Load() - beforeAuth; got != 2 {
+		t.Fatalf("Authorization requests must not be cached (hits=%d)", got)
+	}
+
+	// Cacheable asset caches on second request, and clears on preset change or port/scheme change.
+	resp1, _ := http.Get(proxyTs.URL + "/cached.js")
+	_ = resp1.Body.Close()
+	if srv.Snapshot().CachedAssets != 1 {
+		t.Fatalf("expected 1 cached asset, got %d", srv.Snapshot().CachedAssets)
+	}
+	if err := srv.UpdateTarget(upstreamSrv.URL, "ilo"); err != nil {
+		t.Fatal(err)
+	}
+	if srv.Snapshot().CachedAssets != 0 {
+		t.Fatalf("expected staticCache cleared on preset change")
+	}
+
+	resp2, _ := http.Get(proxyTs.URL + "/cached.js")
+	_ = resp2.Body.Close()
+	if srv.Snapshot().CachedAssets != 1 {
+		t.Fatalf("expected 1 cached asset before port/scheme change")
+	}
+	ep := upstream.ParseEndpoint(upstreamSrv.URL)
+	if err := srv.UpdateTarget(fmt.Sprintf("https://%s:%d", ep.BareHost(), ep.Port), ""); err != nil {
+		t.Fatal(err)
+	}
+	if srv.Snapshot().CachedAssets != 0 {
+		t.Fatalf("expected staticCache cleared on scheme change even with same host and port")
+	}
+	// Also verify port change (using a distinct unused port) clears cache.
+	_ = srv.UpdateTarget(upstreamSrv.URL, "")
+	resp4, _ := http.Get(proxyTs.URL + "/cached2.js")
+	_ = resp4.Body.Close()
+	if srv.Snapshot().CachedAssets != 1 {
+		t.Fatalf("expected 1 cached asset before port change")
+	}
+	ln, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	altPort := ln.Addr().(*net.TCPAddr).Port
+	_ = ln.Close()
+	if err := srv.UpdateTarget(fmt.Sprintf("http://%s:%d", ep.BareHost(), altPort), ""); err != nil {
+		t.Fatal(err)
+	}
+	if srv.Snapshot().CachedAssets != 0 {
+		t.Fatalf("expected staticCache cleared on port change even with same BareHost")
+	}
+}
+
+func TestQueryRedactionInLogsAndHostBoundaryRewrite(t *testing.T) {
+	// Host boundary rewriting must never corrupt 192.168.1.10 or 127.0.0.10.
+	html := `<a href="http://192.168.1.1/ok">ok</a><a href="http://192.168.1.10/trap">trap</a>` +
+		`<script>var a="https:\/\/192.168.1.1\/api";var b="https:\/\/192.168.1.1.evil.com\/x";var c='//192.168.1.1-bad/x';</script>`
+	rewritten := RewriteResponseBody(html, "192.168.1.1", 8080, "localhost")
+	for _, mustStay := range []string{
+		"http://192.168.1.10/trap",
+		`https:\/\/192.168.1.1.evil.com\/x`,
+		"//192.168.1.1-bad/x",
+		"http://localhost:8080/ok",
+		`http:\/\/localhost:8080\/api`,
+	} {
+		if !strings.Contains(rewritten, mustStay) {
+			t.Errorf("RewriteResponseBody missing %q in:\n%s", mustStay, rewritten)
+		}
+	}
+
+	if got := RewriteRedirectLocation("https://127.0.0.10/trap", "127.0.0.1", 8080, "localhost", false); got != "https://127.0.0.10/trap" {
+		t.Errorf("RewriteRedirectLocation corrupted prefix host: %q", got)
+	}
+	if got := RewriteRedirectLocation("https://192.168.1.1@evil.com/trap", "192.168.1.1", 8080, "localhost", false); got != "https://192.168.1.1@evil.com/trap" {
+		t.Errorf("RewriteRedirectLocation corrupted userinfo URL: %q", got)
+	}
+
+	// Query strings must be redacted in [METHOD], [FWD], and [REDIRECT] logs.
+	upstreamSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, r.Host+"/done?session=supersecret", http.StatusFound)
+	}))
+	defer upstreamSrv.Close()
+	// Fix redirect URL scheme in handler via a quick custom handler.
+	upstreamSrv.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "http://"+r.Host+"/done?session=supersecret", http.StatusFound)
+	})
+
+	srv := NewServer(Options{InitialTarget: upstreamSrv.URL})
+	proxyTs := httptest.NewServer(srv.ProxyHandler())
+	defer proxyTs.Close()
+	srv.SetProxyPort(proxyTs.Listener.Addr().(*net.TCPAddr).Port)
+
+	client := &http.Client{
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+	}
+	res, err := client.Get(proxyTs.URL + "/login?password=topsecretvalue")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = res.Body.Close()
+
+	joinedLogs := strings.Join(srv.Snapshot().Logs, "\n")
+	if strings.Contains(joinedLogs, "topsecretvalue") || strings.Contains(joinedLogs, "supersecret") {
+		t.Fatalf("logs leaked query secret:\n%s", joinedLogs)
+	}
+	if !strings.Contains(joinedLogs, "[GET] /login?<redacted>") ||
+		!strings.Contains(joinedLogs, "[FWD] -> ") ||
+		!strings.Contains(joinedLogs, "[REDIRECT] ") {
+		t.Fatalf("expected redacted diagnostic logs, got:\n%s", joinedLogs)
 	}
 }
 

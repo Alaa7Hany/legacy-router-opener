@@ -17,6 +17,8 @@ var (
 	shellExecute     = shell32.NewProc("ShellExecuteW")
 	messageBox       = user32.NewProc("MessageBoxW")
 	getConsoleWindow = kernel32.NewProc("GetConsoleWindow")
+	attachConsole    = kernel32.NewProc("AttachConsole")
+	getStdHandle     = kernel32.NewProc("GetStdHandle")
 	createMutex      = kernel32.NewProc("CreateMutexW")
 	waitForSingle    = kernel32.NewProc("WaitForSingleObject")
 	releaseMutex     = kernel32.NewProc("ReleaseMutex")
@@ -44,10 +46,31 @@ func openBrowser(url string) error {
 	return nil
 }
 
-func reportLaunchError(err error) {
-	fmt.Fprintln(os.Stderr, err)
-	console, _, _ := getConsoleWindow.Call()
-	if console != 0 {
+func shouldShowErrorDialog(noBrowser, consoleAttached bool) bool {
+	return !noBrowser && !consoleAttached
+}
+
+func reportLaunchError(err error, noBrowser bool) {
+	const attachParentProcess = ^uintptr(0)
+	const stdErrorHandle = ^uintptr(11) // (DWORD)-12 = STD_ERROR_HANDLE
+
+	consoleAttached := false
+	if console, _, _ := getConsoleWindow.Call(); console != 0 {
+		consoleAttached = true
+	} else if ok, _, _ := attachConsole.Call(attachParentProcess); ok != 0 {
+		consoleAttached = true
+	}
+
+	if _, writeErr := fmt.Fprintln(os.Stderr, err); writeErr != nil && consoleAttached {
+		if handle, _, _ := getStdHandle.Call(stdErrorHandle); handle != 0 && handle != ^uintptr(0) {
+			_, _ = fmt.Fprintln(os.NewFile(handle, "stderr"), err)
+		} else if con, openErr := os.OpenFile("CONOUT$", os.O_WRONLY, 0); openErr == nil {
+			_, _ = fmt.Fprintln(con, err)
+			_ = con.Close()
+		}
+	}
+
+	if !shouldShowErrorDialog(noBrowser, consoleAttached) {
 		return
 	}
 	title, _ := syscall.UTF16PtrFromString("Router Page Opener")

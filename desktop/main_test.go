@@ -8,6 +8,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"fmt"
 	"io"
 	"math/big"
 	"net"
@@ -30,13 +31,11 @@ func TestListenWithFallbackAndExistingProxy(t *testing.T) {
 	defer occupant.Close()
 
 	basePort := occupant.Addr().(*net.TCPAddr).Port
-	listeners, boundPort, alreadyRunning, err := listenWithFallback(basePort)
+	listeners, boundPort, alreadyRunning, _, err := listenWithFallback(basePort)
 	if err != nil {
 		t.Fatalf("listenWithFallback failed: %v", err)
 	}
-	for _, ln := range listeners {
-		_ = ln.Close()
-	}
+	closeListeners(listeners)
 	if alreadyRunning {
 		t.Fatalf("expected alreadyRunning=false for non-proxy occupant")
 	}
@@ -44,21 +43,22 @@ func TestListenWithFallbackAndExistingProxy(t *testing.T) {
 		t.Fatalf("expected fallback port > %d, got %d", basePort, boundPort)
 	}
 
-	// 2. Start a real proxy server and verify listenWithFallback detects it as alreadyRunning.
+	// 2. Start a real proxy server and verify listenWithFallback detects it as alreadyRunning with its controlPort.
 	srv := proxy.NewServer(proxy.Options{InitialTarget: "192.168.1.1"})
-	ts := httptest.NewServer(srv)
+	ts := httptest.NewServer(srv.ProxyHandler())
 	defer ts.Close()
 
 	proxyPort := ts.Listener.Addr().(*net.TCPAddr).Port
-	listeners2, boundPort2, alreadyRunning2, err := listenWithFallback(proxyPort)
+	srv.SetProxyPort(proxyPort)
+	srv.SetControlPort(proxyPort + controlPortOffset)
+	listeners2, boundPort2, alreadyRunning2, controlPort2, err := listenWithFallback(proxyPort)
+	closeListeners(listeners2)
 	if err != nil {
 		t.Fatalf("listenWithFallback(existing) failed: %v", err)
 	}
-	for _, ln := range listeners2 {
-		_ = ln.Close()
-	}
-	if !alreadyRunning2 || boundPort2 != proxyPort {
-		t.Fatalf("expected alreadyRunning=true on port %d, got alreadyRunning=%v port=%d", proxyPort, alreadyRunning2, boundPort2)
+	if !alreadyRunning2 || boundPort2 != proxyPort || controlPort2 != proxyPort+controlPortOffset {
+		t.Fatalf("expected alreadyRunning=true on port %d (control %d), got alreadyRunning=%v port=%d control=%d",
+			proxyPort, proxyPort+controlPortOffset, alreadyRunning2, boundPort2, controlPort2)
 	}
 }
 
@@ -69,28 +69,90 @@ func TestExistingProxyReusedAfterPreferredPortBecomesFree(t *testing.T) {
 	}
 	defer preferred.Close()
 	preferredPort := preferred.Addr().(*net.TCPAddr).Port
-	held, fallbackPort, existing, err := listenWithFallback(preferredPort)
+	held, fallbackPort, existing, _, err := listenWithFallback(preferredPort)
 	if err != nil || existing || fallbackPort == preferredPort {
 		t.Fatalf("reserve fallback port = (%d, %t, %v)", fallbackPort, existing, err)
 	}
-	for _, listener := range held {
-		defer listener.Close()
-	}
+	defer closeListeners(held)
 	if err := preferred.Close(); err != nil {
 		t.Fatal(err)
 	}
 
-	bridge := proxy.NewServer(proxy.Options{ProxyPort: fallbackPort})
-	server := &http.Server{Handler: withInstancePort(bridge, preferredPort)}
+	bridge := proxy.NewServer(proxy.Options{ProxyPort: fallbackPort, ControlPort: fallbackPort + controlPortOffset})
+	server := &http.Server{Handler: withInstancePort(bridge.ProxyHandler(), preferredPort)}
 	go server.Serve(held[0])
 	defer server.Close()
 
-	listeners, port, existing, err := listenWithFallback(preferredPort)
-	for _, listener := range listeners {
-		listener.Close()
+	listeners, port, existing, controlPort, err := listenWithFallback(preferredPort)
+	closeListeners(listeners)
+	if err != nil || !existing || port != fallbackPort || controlPort != fallbackPort+controlPortOffset {
+		t.Fatalf("fallback instance discovery = (%d, %t, %d, %v), want existing on %d (control %d)",
+			port, existing, controlPort, err, fallbackPort, fallbackPort+controlPortOffset)
 	}
-	if err != nil || !existing || port != fallbackPort {
-		t.Fatalf("fallback instance discovery = (%d, %t, %v), want existing on %d", port, existing, err, fallbackPort)
+}
+
+func TestListenRejectsIPv6ShadowedPort(t *testing.T) {
+	v6, err := net.Listen("tcp6", "[::1]:0")
+	if err != nil {
+		t.Skipf("IPv6 loopback unavailable: %v", err)
+	}
+	defer v6.Close()
+
+	shadowedPort := v6.Addr().(*net.TCPAddr).Port
+	// Confirm 127.0.0.1:<shadowedPort> is free so this specifically tests IPv6 shadowing!
+	if probe4, err4 := net.Listen("tcp4", fmt.Sprintf("127.0.0.1:%d", shadowedPort)); err4 != nil {
+		t.Skipf("127.0.0.1:%d not free on host: %v", shadowedPort, err4)
+	} else {
+		_ = probe4.Close()
+	}
+
+	listeners, boundPort, existing, _, err := listenWithFallback(shadowedPort)
+	closeListeners(listeners)
+	if err != nil {
+		t.Fatalf("listenWithFallback failed: %v", err)
+	}
+	if existing || boundPort == shadowedPort {
+		t.Fatalf("expected listenWithFallback to skip IPv6-shadowed port %d, got existing=%v port=%d", shadowedPort, existing, boundPort)
+	}
+
+	if shadowedPort > controlPortOffset {
+		ctrlLns, ctrlPort, err := listenControlWithFallback(shadowedPort - controlPortOffset)
+		closeListeners(ctrlLns)
+		if err != nil {
+			t.Fatalf("listenControlWithFallback failed: %v", err)
+		}
+		if ctrlPort == shadowedPort {
+			t.Fatalf("expected listenControlWithFallback to skip IPv6-shadowed port %d", shadowedPort)
+		}
+	}
+}
+
+func TestStartupRejectsInvalidAndSelfTargets(t *testing.T) {
+	if _, _, err := startApp(launchOptions{target: "javascript:alert(1)", noBrowser: true}); err == nil {
+		t.Fatal("expected startApp to reject javascript: target")
+	}
+	if _, _, err := startApp(launchOptions{target: "192.168.1.1:70000", noBrowser: true}); err == nil {
+		t.Fatal("expected startApp to reject out-of-range port")
+	}
+
+	probe, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	freePort := probe.Addr().(*net.TCPAddr).Port
+	_ = probe.Close()
+
+	if _, _, err := startApp(launchOptions{port: freePort, target: fmt.Sprintf("127.0.0.1:%d", freePort), noBrowser: true}); err == nil {
+		t.Fatal("expected startApp to reject self-targeting proxy port")
+	}
+}
+
+func TestShouldShowErrorDialog(t *testing.T) {
+	if shouldShowErrorDialog(true, false) {
+		t.Fatal("noBrowser=true must suppress modal dialog")
+	}
+	if shouldShowErrorDialog(false, true) {
+		t.Fatal("attached console must suppress modal dialog")
 	}
 }
 

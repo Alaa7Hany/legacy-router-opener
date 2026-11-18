@@ -17,7 +17,11 @@ func openBrowser(url string) error {
 	return exec.Command(command, url).Run()
 }
 
-func reportLaunchError(err error) {
+func shouldShowErrorDialog(noBrowser, consoleAttached bool) bool {
+	return false
+}
+
+func reportLaunchError(err error, _ bool) {
 	fmt.Fprintln(os.Stderr, err)
 }
 

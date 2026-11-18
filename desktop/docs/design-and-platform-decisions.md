@@ -25,11 +25,11 @@ Key product and engineering choices made for the Desktop version, and why they e
 
 ---
 
-## 4. Separating `/_bridge` from `/`
+## 4. Separating the Opener Origin from `/`
 
 - **Why not put the opener controls at `/` and proxy the router under `/router/`?**
   Older routers, switches, and server controllers hardcode root-relative links like `/index/login.cgi`, `/js/util.js`, and `/images/logo.gif`, and rely heavily on `<frameset>` layouts. Moving the device off `/` breaks scripts and images across dozens of hardware models.
-- **Decision:** The proxied device is served at `/` and the opener lives at `/_bridge`. **Quit app** opens a confirmation on a separate local browser origin so scripts from the proxied device cannot shut down the app.
+- **Decision:** The proxied device is served at `/` on the proxy port (default `8080`), while the opener (`/_bridge`) and **Quit app** (`/quit`) live on a separate local browser origin (default `8180`, `proxyPort + 100`) protected by strict `Host` and CSRF checks. Visiting `http://localhost:8080/_bridge` redirects cleanly to the control origin, while scripts served by the proxied device at `8080` cannot read logs/state, alter the target, or shut down the app.
 
 ---
 

@@ -7,13 +7,23 @@ export function activateLanguage(onChange = () => {}) {
   const trigger = document.getElementById('language-switch');
   const options = picker.querySelectorAll('.language-option');
   const quit = document.getElementById('quit-link');
+  const urlLang = new URLSearchParams(window.location.search).get('lang');
   let language = root.lang;
 
-  try {
-    const saved = localStorage.getItem(storageKey);
-    if (saved === 'ar' || saved === 'en') language = saved;
-  } catch {
-    // The switch still works on this page when browser storage is unavailable.
+  if (urlLang === 'ar' || urlLang === 'en') {
+    language = urlLang;
+    try {
+      localStorage.setItem(storageKey, language);
+    } catch {
+      // Keep the current selection in memory for this page.
+    }
+  } else {
+    try {
+      const saved = localStorage.getItem(storageKey);
+      if (saved === 'ar' || saved === 'en') language = saved;
+    } catch {
+      // The switch still works on this page when browser storage is unavailable.
+    }
   }
 
   const text = (key) => catalog[language][key];
@@ -31,8 +41,13 @@ export function activateLanguage(onChange = () => {}) {
     for (const option of options) {
       option.setAttribute('aria-pressed', String(option.dataset.language === language));
     }
-    if (quit) {
-      const address = new URL(quit.href);
+    for (const link of document.querySelectorAll('a[data-preserve-lang]')) {
+      const address = new URL(link.href, window.location.href);
+      address.searchParams.set('lang', language);
+      link.href = address.href;
+    }
+    if (quit && !quit.hasAttribute('data-preserve-lang')) {
+      const address = new URL(quit.href, window.location.href);
       address.searchParams.set('lang', language);
       quit.href = address.href;
     }
@@ -45,6 +60,11 @@ export function activateLanguage(onChange = () => {}) {
         localStorage.setItem(storageKey, language);
       } catch {
         // Keep the current selection in memory for this page.
+      }
+      const url = new URL(window.location.href);
+      if (url.searchParams.has('lang')) {
+        url.searchParams.set('lang', language);
+        window.history.replaceState(null, '', url);
       }
       picker.open = false;
       render();

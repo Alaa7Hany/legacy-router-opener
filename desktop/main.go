@@ -25,7 +25,7 @@ func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 	if err := run(ctx, options); err != nil {
-		reportLaunchError(err)
+		reportLaunchError(err, options.noBrowser)
 		os.Exit(1)
 	}
 }

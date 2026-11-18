@@ -3,24 +3,28 @@ package main
 import (
 	"crypto/rand"
 	"crypto/subtle"
+	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/alaa/legacyrouteropener/internal/bridgeui"
+	"github.com/alaa/legacyrouteropener/internal/proxy"
 )
 
 const quitPath = "/quit"
 
 type quitHandler struct {
-	host, openerURL, token string
-	stop                   func()
-	watchTab               func() func()
-	stopping               <-chan struct{}
+	controlPort int
+	token       string
+	stop        func()
+	watchTab    func() func()
+	stopping    <-chan struct{}
 }
 
-func newQuitHandler(host, openerURL string, stop func()) *quitHandler {
-	return &quitHandler{host: host, openerURL: openerURL, token: rand.Text(), stop: stop}
+func newQuitHandler(controlPort int, stop func()) *quitHandler {
+	return &quitHandler{controlPort: controlPort, token: rand.Text(), stop: stop}
 }
 
 func (q *quitHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -28,7 +32,8 @@ func (q *quitHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; script-src 'self'; connect-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'")
 	w.Header().Set("Referrer-Policy", "same-origin")
 	w.Header().Set("X-Frame-Options", "DENY")
-	if r.Host != q.host {
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	if !proxy.IsAllowedLoopbackHost(r.Host, q.controlPort) {
 		http.NotFound(w, r)
 		return
 	}
@@ -51,12 +56,18 @@ func (q *quitHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	language := bridgeui.SelectLanguage(r.URL.Query().Get("lang"), r.Header.Get("Accept-Language"))
+	openerURL := fmt.Sprintf("http://%s/_bridge?lang=%s", proxy.CanonicalLoopbackHost(r.Host), language)
 	switch r.Method {
 	case http.MethodGet:
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		_ = bridgeui.WriteQuit(w, language, q.openerURL, q.token)
+		_ = bridgeui.WriteQuit(w, language, openerURL, q.token)
 	case http.MethodPost:
-		if r.Header.Get("Origin") != "http://"+q.host {
+		if sfs := strings.TrimSpace(r.Header.Get("Sec-Fetch-Site")); sfs != "" && sfs != "same-origin" && sfs != "none" {
+			http.Error(w, bridgeui.Text(language, "quit_wrong_origin"), http.StatusForbidden)
+			return
+		}
+		origin := strings.TrimSpace(r.Header.Get("Origin"))
+		if !proxy.IsAllowedLoopbackOrigin(origin, q.controlPort) || !strings.EqualFold(origin, "http://"+r.Host) {
 			http.Error(w, bridgeui.Text(language, "quit_wrong_origin"), http.StatusForbidden)
 			return
 		}
@@ -67,7 +78,8 @@ func (q *quitHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		if err := bridgeui.WriteQuit(w, language, q.openerURL, ""); err == nil {
+		if err := bridgeui.WriteQuit(w, language, openerURL, ""); err == nil {
+			_ = http.NewResponseController(w).Flush()
 			q.stop()
 		}
 	default:

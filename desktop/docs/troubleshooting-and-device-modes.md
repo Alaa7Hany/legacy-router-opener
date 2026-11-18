@@ -50,11 +50,21 @@ Expand **Change device** and open **Device type** if a specific piece of hardwar
 
 ## Reopening or Quitting the App
 
-Keep the opener tab open while you use the router page. Closing the last opener tab stops the bridge and disconnects any router tabs after a few seconds. You can also click **Quit app** and confirm. Double-click `legacy-router-opener.exe` to open it again.
+Keep the opener tab open while you configure or troubleshoot your connection. If you haven't opened a router page yet, closing the last opener tab stops the bridge after a few seconds. Once you open a router page, closing the opener tab keeps your router session alive and stops the bridge automatically after **5 minutes** of zero router activity—or immediately when you click **Quit app** and confirm. Double-click `legacy-router-opener.exe` to open it again.
 
-When using `-no-browser` or `-open-router`, the bridge waits for an opener tab or a manual shutdown. Once you open an opener tab, closing the last one stops the bridge.
+When using `-no-browser` or `--open-router` (or `-open-router`), the bridge skips the opener auto-stop timeout and stays running until you stop it with `Ctrl+C` in the terminal or visit the opener URL printed in the terminal output (for example, `http://localhost:8180/_bridge`) and click **Quit app**. Once you open an opener tab, closing it starts the normal auto-stop timer.
 
 If you ever need a separate instance on a different port, run it from a terminal with `-port`:
 ```powershell
 .\legacy-router-opener.exe -port 8090
 ```
+
+---
+
+## TLS & Protocol Compatibility
+
+The standalone Windows executable (`legacy-router-opener.exe`, built with Go 1.27 stdlib) handles almost all legacy embedded devices without external runtimes, with two cryptographic exceptions:
+
+- **Supported:** TLS 1.0–1.3, 1024-bit RSA keys, SHA-1 signatures, expired/self-signed/negative-serial certificates, `3DES`, `RC4`, and `AES-CBC` cipher suites, server-initiated renegotiation (both RFC 5746 and unsafe legacy renegotiation), abrupt TCP close without TLS `close_notify`, compact ClientHello fallback, and automatic `:443` → `:80` / plain HTTP fallback.
+- **Not supported by the Go stdlib `.exe`:** finite-field `DHE-RSA` cipher suites (used by some Dell iDRAC 6 configurations) and `SSLv3` (used by older APC NMC1 cards such as `AP9617`).
+  - If your device requires `DHE-RSA` or `SSLv3`, try plain HTTP (`http://<device-ip>` on port `80`) if enabled on the device, or run the included OpenSSL-backed Node.js fallback at [`desktop/legacy/index.mjs`](../legacy/index.mjs).

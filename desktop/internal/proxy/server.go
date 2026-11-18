@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"sync"
@@ -26,10 +27,12 @@ type StateSnapshot struct {
 	Logs            []string                  `json:"logs"`
 }
 
-// Server implements both the /_bridge Web Launchpad API and the /* legacy reverse proxy.
+// Server implements the separate /_bridge control-plane handler and /* legacy reverse-proxy handler.
 type Server struct {
 	mu              sync.RWMutex
 	proxyPort       int
+	controlPort     int
+	requestedPort   int
 	target          string
 	preset          upstream.HardwarePreset
 	detectedGateway string
@@ -38,6 +41,7 @@ type Server struct {
 	logs            []string
 	sseSubscribers  map[chan struct{}]struct{}
 	onStdoutLog     func(string)
+	onProxyActivity func()
 	client          *upstream.Client
 	quitURL         string
 	stopping        <-chan struct{}
@@ -47,10 +51,13 @@ type Server struct {
 // Options configures a new proxy Server instance.
 type Options struct {
 	ProxyPort       int
+	ControlPort     int
+	RequestedPort   int
 	InitialTarget   string
 	InitialPresetID string
 	DetectedGateway string
 	OnStdoutLog     func(string)
+	OnProxyActivity func()
 	QuitURL         string
 	Stopping        <-chan struct{}
 	WatchOpenerTab  func() func()
@@ -78,6 +85,8 @@ func NewServer(opts Options) *Server {
 
 	s := &Server{
 		proxyPort:       port,
+		controlPort:     opts.ControlPort,
+		requestedPort:   opts.RequestedPort,
 		target:          target,
 		preset:          preset,
 		detectedGateway: gw,
@@ -85,47 +94,85 @@ func NewServer(opts Options) *Server {
 		staticCache:     make(map[string]cachedAsset),
 		sseSubscribers:  make(map[chan struct{}]struct{}),
 		onStdoutLog:     opts.OnStdoutLog,
+		onProxyActivity: opts.OnProxyActivity,
 		quitURL:         opts.QuitURL,
 		stopping:        opts.Stopping,
 		watchOpenerTab:  opts.WatchOpenerTab,
 	}
 	s.client = upstream.NewClient(preset.MaxConcurrentSockets, s.appendLog)
+	s.client.SetBlockedLoopbackPorts(port, opts.ControlPort)
 	return s
 }
 
-// SetProxyPort updates the listening port reported by the UI and URL rewriter.
+// SetProxyPort updates the proxy listening port reported by the UI and URL rewriter.
 func (s *Server) SetProxyPort(port int) {
 	s.mu.Lock()
 	s.proxyPort = port
+	controlPort := s.controlPort
 	s.mu.Unlock()
+	s.client.SetBlockedLoopbackPorts(port, controlPort)
 	s.notifySubscribers()
 }
 
-// ProxyPort returns the bound listening port.
+// ProxyPort returns the bound proxy listening port.
 func (s *Server) ProxyPort() int {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.proxyPort
 }
 
+// SetControlPort updates the control/opener listening port.
+func (s *Server) SetControlPort(port int) {
+	s.mu.Lock()
+	s.controlPort = port
+	proxyPort := s.proxyPort
+	s.mu.Unlock()
+	s.client.SetBlockedLoopbackPorts(proxyPort, port)
+}
+
+// ControlPort returns the bound control/opener listening port.
+func (s *Server) ControlPort() int {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.controlPort
+}
+
+// SetRequestedPort updates the original requested proxy port reported on ping responses.
+func (s *Server) SetRequestedPort(port int) {
+	s.mu.Lock()
+	s.requestedPort = port
+	s.mu.Unlock()
+}
+
+// RequestedPort returns the requested proxy port reported on ping responses.
+func (s *Server) RequestedPort() int {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.requestedPort
+}
+
 // UpdateTarget switches the active target endpoint and preset at runtime.
 func (s *Server) UpdateTarget(rawTarget string, presetID string) error {
+	newEndpoint, err := upstream.ValidateTarget(rawTarget)
+	if err != nil {
+		return err
+	}
+	if err := s.client.CheckTargetAllowed(context.Background(), newEndpoint); err != nil {
+		return err
+	}
 	trimmed := strings.TrimSpace(rawTarget)
-	if trimmed == "" {
-		return fmt.Errorf("target endpoint cannot be empty")
-	}
-	if strings.ContainsAny(trimmed, " \t\r\n") {
-		return fmt.Errorf("target endpoint cannot contain whitespace")
-	}
 
 	s.mu.Lock()
-	oldHost := upstream.ParseEndpoint(s.target).BareHost()
+	oldEndpoint := upstream.ParseEndpoint(s.target)
+	oldPresetID := s.preset.ID
 	if presetID != "" {
 		s.preset = upstream.FindPreset(presetID)
 	}
 	s.target = trimmed
-	newEndpoint := upstream.ParseEndpoint(trimmed)
-	if oldHost != newEndpoint.BareHost() {
+	if oldEndpoint.Host != newEndpoint.Host ||
+		oldEndpoint.Port != newEndpoint.Port ||
+		oldEndpoint.Scheme() != newEndpoint.Scheme() ||
+		oldPresetID != s.preset.ID {
 		s.staticCache = make(map[string]cachedAsset)
 	}
 	if jar, ok := s.jars[newEndpoint.BareHost()]; ok {
@@ -138,6 +185,18 @@ func (s *Server) UpdateTarget(rawTarget string, presetID string) error {
 	s.client.SetMaxSockets(maxSock)
 	s.appendLog(fmt.Sprintf("[TARGET] %s (Preset: %s, Max Sockets: %d)", newEndpoint.URL(), presetName, maxSock))
 	return nil
+}
+
+// CheckTargetAllowed reports whether rawTarget passes blocked loopback port checks.
+func (s *Server) CheckTargetAllowed(rawTarget string) error {
+	ep := upstream.ParseEndpoint(rawTarget)
+	return s.client.CheckTargetAllowed(context.Background(), ep)
+}
+
+func (s *Server) recordProxyActivity() {
+	if s.onProxyActivity != nil {
+		s.onProxyActivity()
+	}
 }
 
 // Snapshot returns a thread-safe snapshot of current state, telemetry, and logs.

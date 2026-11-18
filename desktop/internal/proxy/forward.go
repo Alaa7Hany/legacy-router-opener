@@ -51,10 +51,13 @@ type cachedAsset struct {
 }
 
 func (s *Server) handleProxy(w http.ResponseWriter, r *http.Request) {
+	s.recordProxyActivity()
+
 	s.mu.RLock()
 	target := s.target
 	preset := s.preset
 	proxyPort := s.proxyPort
+	controlPort := s.controlPort
 	s.mu.RUnlock()
 
 	targetPath := r.URL.RequestURI()
@@ -63,14 +66,16 @@ func (s *Server) handleProxy(w http.ResponseWriter, r *http.Request) {
 	}
 	effectiveProxyHost := resolveEffectiveProxyHost(r.Host)
 
+	hasAuthorization := strings.TrimSpace(r.Header.Get("Authorization")) != ""
 	isStatic := r.Method == http.MethodGet && IsStaticAsset(targetPath)
+	canUseStaticCache := isStatic && !hasAuthorization
 	cacheKey := fmt.Sprintf("%s|%s|%s", target, effectiveProxyHost, targetPath)
-	if isStatic {
+	if canUseStaticCache {
 		s.mu.RLock()
 		cached, hit := s.staticCache[cacheKey]
 		s.mu.RUnlock()
 		if hit {
-			s.appendLog(fmt.Sprintf("[CACHE] %s (%dB)", r.URL.Path, len(cached.body)))
+			s.appendLog(fmt.Sprintf("[CACHE] %s (%dB)", upstream.RedactQuery(r.URL.Path), len(cached.body)))
 			w.Header().Set("Content-Type", cached.mimeType)
 			w.Header().Set("Content-Length", strconv.Itoa(len(cached.body)))
 			w.Header().Set("Cache-Control", "public, max-age=3600")
@@ -81,7 +86,8 @@ func (s *Server) handleProxy(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	s.appendLog(fmt.Sprintf("[%s] %s", r.Method, targetPath))
+	safePath := upstream.RedactQuery(targetPath)
+	s.appendLog(fmt.Sprintf("[%s] %s", r.Method, safePath))
 
 	var reqBody []byte
 	if r.Body != nil {
@@ -97,7 +103,7 @@ func (s *Server) handleProxy(w http.ResponseWriter, r *http.Request) {
 	jar := s.activeJar()
 	mergedCookies := jar.GetMergedCookieHeader(r.Header.Get("Cookie"))
 
-	s.appendLog(fmt.Sprintf("[FWD] -> %s%s", target, targetPath))
+	s.appendLog(fmt.Sprintf("[FWD] -> %s%s", upstream.RedactQuery(target), safePath))
 	resp, usedEndpoint, err := s.client.SendRequest(r.Context(), target, preset, upstream.UpstreamRequest{
 		Method:  r.Method,
 		Path:    targetPath,
@@ -107,10 +113,17 @@ func (s *Server) handleProxy(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		s.appendLog(fmt.Sprintf("[ERR] Router connection failed: %v", err))
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.Header().Set("Cache-Control", "no-store")
+		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("X-Legacy-Router-Proxy", "1")
 		w.WriteHeader(http.StatusBadGateway)
+		openerPort := controlPort
+		if openerPort <= 0 {
+			openerPort = proxyPort
+		}
+		openerURL := fmt.Sprintf("http://%s:%d/_bridge", effectiveProxyHost, openerPort)
 		language := bridgeui.SelectLanguage("", r.Header.Get("Accept-Language"))
-		_ = bridgeui.WriteError(w, language, target, err.Error())
+		_ = bridgeui.WriteError(w, language, target, err.Error(), openerURL)
 		return
 	}
 
@@ -126,9 +139,19 @@ func (s *Server) handleProxy(w http.ResponseWriter, r *http.Request) {
 		finalBytes = []byte(rewritten)
 	}
 
-	if isStatic &&
+	upstreamCC := strings.ToLower(strings.Join(resp.Headers.Values("Cache-Control"), ","))
+	upstreamPragma := strings.ToLower(strings.Join(resp.Headers.Values("Pragma"), ","))
+	upstreamNoCache := strings.Contains(upstreamCC, "no-store") ||
+		strings.Contains(upstreamCC, "no-cache") ||
+		strings.Contains(upstreamCC, "private") ||
+		strings.Contains(upstreamPragma, "no-cache")
+
+	cacheableStatic := canUseStaticCache &&
 		resp.StatusCode == http.StatusOK &&
 		len(setCookies) == 0 &&
+		!upstreamNoCache
+
+	if cacheableStatic &&
 		len(finalBytes) > 0 &&
 		len(finalBytes) <= maxCachedAssetBytes {
 		s.mu.Lock()
@@ -148,10 +171,10 @@ func (s *Server) handleProxy(w http.ResponseWriter, r *http.Request) {
 			}
 			rewrittenLoc := RewriteRedirectLocation(loc, usedEndpoint.Host, proxyPort, effectiveProxyHost, preset.RewriteSingleLabelHost)
 			outHeaders.Set("Location", rewrittenLoc)
-			s.appendLog(fmt.Sprintf("[REDIRECT] %s -> %s", loc, rewrittenLoc))
+			s.appendLog(fmt.Sprintf("[REDIRECT] %s -> %s", upstream.RedactQuery(loc), upstream.RedactQuery(rewrittenLoc)))
 			continue
 		}
-		if strippedResponseHeaders[lower] || (isStatic && staticCacheStrippedHeaders[lower]) {
+		if strippedResponseHeaders[lower] || (cacheableStatic && staticCacheStrippedHeaders[lower]) {
 			continue
 		}
 		if lower == "content-type" {
@@ -168,7 +191,7 @@ func (s *Server) handleProxy(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if isStatic && resp.StatusCode == http.StatusOK {
+	if cacheableStatic {
 		outHeaders.Set("Cache-Control", "public, max-age=3600")
 	}
 
@@ -197,7 +220,9 @@ func resolveEffectiveProxyHost(hostHeader string) string {
 		host = h
 	}
 	switch strings.ToLower(host) {
-	case "127.0.0.1", "localhost", "[::1]":
+	case "localhost":
+		return "localhost"
+	case "127.0.0.1", "[::1]":
 		return host
 	default:
 		return "localhost"

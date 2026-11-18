@@ -14,7 +14,10 @@ import (
 	"strings"
 )
 
+const maxResponseBodyBytes = 64 * 1024 * 1024
+
 var (
+	errResponseTooLarge = errors.New("upstream response body exceeded 64MB limit")
 	proxyAuthorityRegex = regexp.MustCompile(`(?i)https?://(127\.0\.0\.1|localhost|\[::1\])(:\d+)?`)
 
 	strippedOutgoingHeaders = map[string]bool{
@@ -178,7 +181,7 @@ func parseRawHTTPResponse(reader *bufio.Reader, requestMethod string) (UpstreamR
 		case strings.Contains(te, "chunked"):
 			rawBody, err = readChunkedBodyLenient(reader)
 		case clStr != "":
-			if cl, parseErr := strconv.Atoi(clStr); parseErr == nil {
+			if cl, parseErr := strconv.ParseInt(clStr, 10, 64); parseErr == nil {
 				if cl <= 0 {
 					rawBody = nil
 				} else {
@@ -195,7 +198,10 @@ func parseRawHTTPResponse(reader *bufio.Reader, requestMethod string) (UpstreamR
 		}
 	}
 
-	body := decompressIfNeeded(rawBody, strings.ToLower(strings.TrimSpace(headers.Get("Content-Encoding"))))
+	body, err := decompressIfNeeded(rawBody, strings.ToLower(strings.TrimSpace(headers.Get("Content-Encoding"))))
+	if err != nil {
+		return UpstreamResponse{}, err
+	}
 	return UpstreamResponse{
 		StatusCode: statusCode,
 		StatusText: statusText,
@@ -240,32 +246,35 @@ func parseStatusLineLenient(line string) (int, string) {
 	return code, text
 }
 
-func readExactLenient(r *bufio.Reader, n int) ([]byte, error) {
-	buf := make([]byte, n)
-	total := 0
-	for total < n {
-		read, err := r.Read(buf[total:])
-		total += read
-		if err != nil {
-			if isCleanOrAbruptEOF(err) {
-				return buf[:total], nil
-			}
-			return nil, err
-		}
+func readExactLenient(r *bufio.Reader, n int64) ([]byte, error) {
+	if n <= 0 {
+		return nil, nil
 	}
-	return buf, nil
+	limit := min(n, int64(maxResponseBodyBytes)+1)
+	bufSize := int(min(limit, 32*1024))
+	return readBoundedStream(io.LimitReader(r, limit), maxResponseBodyBytes, bufSize, true)
 }
 
 func readUntilEOFLenient(r *bufio.Reader) ([]byte, error) {
+	return readBoundedStream(r, maxResponseBodyBytes, 8192, true)
+}
+
+func readBoundedStream(r io.Reader, maxBytes int64, bufSize int, tolerateAbruptEOF bool) ([]byte, error) {
+	if bufSize <= 0 {
+		bufSize = 8192
+	}
 	var out bytes.Buffer
-	chunk := make([]byte, 8192)
+	chunk := make([]byte, bufSize)
 	for {
 		n, err := r.Read(chunk)
 		if n > 0 {
+			if int64(out.Len())+int64(n) > maxBytes {
+				return nil, errResponseTooLarge
+			}
 			out.Write(chunk[:n])
 		}
 		if err != nil {
-			if isCleanOrAbruptEOF(err) {
+			if err == io.EOF || (tolerateAbruptEOF && isCleanOrAbruptEOF(err)) {
 				return out.Bytes(), nil
 			}
 			return nil, err
@@ -302,7 +311,11 @@ func readChunkedBodyLenient(r *bufio.Reader) ([]byte, error) {
 			return out.Bytes(), nil
 		}
 
-		chunk, readErr := readExactLenient(r, int(chunkSize))
+		remaining := int64(maxResponseBodyBytes) - int64(out.Len())
+		chunk, readErr := readExactLenient(r, min(chunkSize, remaining+1))
+		if int64(out.Len())+int64(len(chunk)) > maxResponseBodyBytes {
+			return nil, errResponseTooLarge
+		}
 		out.Write(chunk)
 		if readErr != nil {
 			return nil, readErr
@@ -311,37 +324,48 @@ func readChunkedBodyLenient(r *bufio.Reader) ([]byte, error) {
 	}
 }
 
-func decompressIfNeeded(body []byte, encoding string) []byte {
+func decompressIfNeeded(body []byte, encoding string) ([]byte, error) {
 	if len(body) == 0 || encoding == "" {
-		return body
+		return body, nil
 	}
 	switch {
 	case strings.Contains(encoding, "gzip"):
 		gr, err := gzip.NewReader(bytes.NewReader(body))
 		if err != nil {
-			return body
+			return body, nil
 		}
 		defer gr.Close()
-		decompressed, err := io.ReadAll(gr)
-		if err != nil {
-			return body
+		decompressed, err := readBoundedStream(io.LimitReader(gr, maxResponseBodyBytes+1), maxResponseBodyBytes, 8192, false)
+		if errors.Is(err, errResponseTooLarge) {
+			return nil, err
 		}
-		return decompressed
+		if err != nil {
+			return body, nil
+		}
+		return decompressed, nil
 	case strings.Contains(encoding, "deflate"):
 		if zr, err := zlib.NewReader(bytes.NewReader(body)); err == nil {
 			defer zr.Close()
-			if decompressed, rErr := io.ReadAll(zr); rErr == nil {
-				return decompressed
+			decompressed, rErr := readBoundedStream(io.LimitReader(zr, maxResponseBodyBytes+1), maxResponseBodyBytes, 8192, false)
+			if errors.Is(rErr, errResponseTooLarge) {
+				return nil, rErr
+			}
+			if rErr == nil {
+				return decompressed, nil
 			}
 		}
 		fr := flate.NewReader(bytes.NewReader(body))
 		defer fr.Close()
-		if decompressed, err := io.ReadAll(fr); err == nil {
-			return decompressed
+		decompressed, fErr := readBoundedStream(io.LimitReader(fr, maxResponseBodyBytes+1), maxResponseBodyBytes, 8192, false)
+		if errors.Is(fErr, errResponseTooLarge) {
+			return nil, fErr
 		}
-		return body
+		if fErr == nil {
+			return decompressed, nil
+		}
+		return body, nil
 	default:
-		return body
+		return body, nil
 	}
 }
 

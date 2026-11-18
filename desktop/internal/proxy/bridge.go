@@ -2,46 +2,181 @@ package proxy
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"mime"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/alaa/legacyrouteropener/internal/bridgeui"
 	"github.com/alaa/legacyrouteropener/internal/gateway"
+	"github.com/alaa/legacyrouteropener/internal/upstream"
 )
 
-// ServeHTTP dispatches /_bridge control requests and reverse-proxies all other paths to the active target.
-func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	if r.URL.Path == "/_bridge" || strings.HasPrefix(r.URL.Path, "/_bridge/") {
-		s.handleBridge(w, r)
-		return
+// IsAllowedLoopbackHost enforces the strict Host allowlist for DNS-rebinding defense.
+func IsAllowedLoopbackHost(hostHeader string, port int) bool {
+	if port <= 0 {
+		return false
 	}
-	s.handleProxy(w, r)
+	portStr := strconv.Itoa(port)
+	return strings.EqualFold(hostHeader, "localhost:"+portStr) ||
+		hostHeader == "127.0.0.1:"+portStr ||
+		hostHeader == "[::1]:"+portStr
 }
 
-func (s *Server) handleBridge(w http.ResponseWriter, r *http.Request) {
+// IsAllowedLoopbackOrigin validates Origin against allowed loopback HTTP origins for the given port.
+func IsAllowedLoopbackOrigin(origin string, port int) bool {
+	if port <= 0 || origin == "" {
+		return false
+	}
+	portStr := strconv.Itoa(port)
+	return strings.EqualFold(origin, "http://localhost:"+portStr) ||
+		strings.EqualFold(origin, "http://127.0.0.1:"+portStr) ||
+		strings.EqualFold(origin, "http://[::1]:"+portStr)
+}
+
+// CanonicalLoopbackHost normalizes the case of localhost:<port> while leaving IP hosts unchanged.
+func CanonicalLoopbackHost(hostHeader string) string {
+	if strings.HasPrefix(strings.ToLower(hostHeader), "localhost:") {
+		return "localhost:" + hostHeader[len("localhost:"):]
+	}
+	return hostHeader
+}
+
+// ProxyHandler serves proxied router traffic, the read-only ping endpoint, and a redirect from /_bridge to the control origin.
+func (s *Server) ProxyHandler() http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !IsAllowedLoopbackHost(r.Host, s.ProxyPort()) {
+			http.NotFound(w, r)
+			return
+		}
+		switch {
+		case r.URL.Path == "/_bridge/api/ping":
+			if r.Method != http.MethodGet {
+				http.NotFound(w, r)
+				return
+			}
+			s.writePing(w)
+			return
+		case r.URL.Path == "/_bridge" || r.URL.Path == "/_bridge/":
+			if (r.Method == http.MethodGet || r.Method == http.MethodHead) && s.ControlPort() > 0 {
+				w.Header().Set("Cache-Control", "no-store")
+				targetURL := fmt.Sprintf("http://%s:%d/_bridge", resolveEffectiveProxyHost(r.Host), s.ControlPort())
+				if r.URL.RawQuery != "" {
+					targetURL += "?" + r.URL.RawQuery
+				}
+				http.Redirect(w, r, targetURL, http.StatusFound)
+				return
+			}
+			http.NotFound(w, r)
+			return
+		case strings.HasPrefix(r.URL.Path, "/_bridge/"):
+			http.NotFound(w, r)
+			return
+		}
+		s.handleProxy(w, r)
+	})
+}
+
+// ControlHandler serves the isolated /_bridge opener UI, assets, APIs, and SSE event stream.
+func (s *Server) ControlHandler() http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !IsAllowedLoopbackHost(r.Host, s.ControlPort()) {
+			http.NotFound(w, r)
+			return
+		}
+		s.handleControl(w, r)
+	})
+}
+
+func (s *Server) writePing(w http.ResponseWriter) {
 	w.Header().Set("X-Legacy-Router-Proxy", "1")
 	w.Header().Set("Cache-Control", "no-store")
+	if rp := s.RequestedPort(); rp > 0 {
+		w.Header().Set("X-Legacy-Router-Requested-Port", strconv.Itoa(rp))
+	}
+	if cp := s.ControlPort(); cp > 0 {
+		w.Header().Set("X-Legacy-Router-Control-Port", strconv.Itoa(cp))
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "proxy": "legacy-router-opener"})
+}
+
+func (s *Server) requireControlCSRF(w http.ResponseWriter, r *http.Request, requireJSON bool) bool {
+	if sfs := strings.TrimSpace(r.Header.Get("Sec-Fetch-Site")); sfs != "" && sfs != "same-origin" && sfs != "none" {
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "cross-site request rejected"})
+		return false
+	}
+	origin := strings.TrimSpace(r.Header.Get("Origin"))
+	if !IsAllowedLoopbackOrigin(origin, s.ControlPort()) {
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "invalid origin"})
+		return false
+	}
+	if requireJSON {
+		mediaType, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
+		if err != nil || mediaType != "application/json" {
+			writeJSON(w, http.StatusUnsupportedMediaType, map[string]string{"error": "Content-Type must be application/json"})
+			return false
+		}
+	}
+	return true
+}
+
+func allowControlRead(w http.ResponseWriter, r *http.Request) bool {
+	if sfs := strings.TrimSpace(r.Header.Get("Sec-Fetch-Site")); sfs != "" && sfs != "same-origin" && sfs != "none" {
+		http.Error(w, "cross-site request rejected", http.StatusForbidden)
+		return false
+	}
+	return true
+}
+
+func classifyTargetError(err error) string {
+	if errors.Is(err, upstream.ErrSelfTargetBlocked) {
+		return "address_self_blocked"
+	}
+	msg := err.Error()
+	if strings.Contains(msg, "empty") {
+		return "address_required"
+	}
+	if strings.Contains(msg, "whitespace") {
+		return "address_spaces"
+	}
+	return "address_invalid"
+}
+
+func (s *Server) handleControl(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("X-Legacy-Router-Proxy", "1")
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("X-Frame-Options", "DENY")
+	w.Header().Set("Referrer-Policy", "same-origin")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
 
 	switch {
 	case (r.URL.Path == "/_bridge" || r.URL.Path == "/_bridge/") && r.Method == http.MethodGet:
+		w.Header().Set("Content-Security-Policy", "default-src 'none'; style-src 'self'; script-src 'self'; connect-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'")
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		snapshot := s.Snapshot()
-		language := bridgeui.SelectLanguage("", r.Header.Get("Accept-Language"))
+		language := bridgeui.SelectLanguage(r.URL.Query().Get("lang"), r.Header.Get("Accept-Language"))
 		_ = bridgeui.WriteBridge(w, language, snapshot.Target, snapshot.DetectedGateway, s.quitURL, snapshot)
 
 	case strings.HasPrefix(r.URL.Path, "/_bridge/assets/") && (r.Method == http.MethodGet || r.Method == http.MethodHead):
 		bridgeui.ServeAsset(w, r, strings.TrimPrefix(r.URL.Path, "/_bridge/assets/"))
 
 	case r.URL.Path == "/_bridge/api/ping" && r.Method == http.MethodGet:
-		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "proxy": "legacy-router-opener"})
+		s.writePing(w)
 
 	case r.URL.Path == "/_bridge/api/state" && r.Method == http.MethodGet:
+		if !allowControlRead(w, r) {
+			return
+		}
 		writeJSON(w, http.StatusOK, s.Snapshot())
 
 	case r.URL.Path == "/_bridge/api/config" && r.Method == http.MethodPost:
+		if !s.requireControlCSRF(w, r, true) {
+			return
+		}
 		var req struct {
 			Target string `json:"target"`
 			Preset string `json:"preset"`
@@ -51,12 +186,18 @@ func (s *Server) handleBridge(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if err := s.UpdateTarget(req.Target, req.Preset); err != nil {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			writeJSON(w, http.StatusBadRequest, map[string]string{
+				"error":    err.Error(),
+				"errorKey": classifyTargetError(err),
+			})
 			return
 		}
 		writeJSON(w, http.StatusOK, s.Snapshot())
 
 	case r.URL.Path == "/_bridge/api/reset" && r.Method == http.MethodPost:
+		if !s.requireControlCSRF(w, r, false) {
+			return
+		}
 		evicted := s.activeJar().Clear()
 		s.mu.Lock()
 		s.staticCache = make(map[string]cachedAsset)
@@ -71,6 +212,9 @@ func (s *Server) handleBridge(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, s.Snapshot())
 
 	case r.URL.Path == "/_bridge/api/detect-gateway" && r.Method == http.MethodPost:
+		if !s.requireControlCSRF(w, r, false) {
+			return
+		}
 		gw := gateway.DetectDefaultGateway()
 		s.mu.Lock()
 		s.detectedGateway = gw
@@ -79,6 +223,9 @@ func (s *Server) handleBridge(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]string{"gateway": gw})
 
 	case r.URL.Path == "/_bridge/api/logs/clear" && r.Method == http.MethodPost:
+		if !s.requireControlCSRF(w, r, false) {
+			return
+		}
 		s.mu.Lock()
 		s.logs = nil
 		s.mu.Unlock()
@@ -86,6 +233,9 @@ func (s *Server) handleBridge(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 
 	case r.URL.Path == "/_bridge/events" && r.Method == http.MethodGet:
+		if !allowControlRead(w, r) {
+			return
+		}
 		s.handleSSE(w, r)
 
 	default:
