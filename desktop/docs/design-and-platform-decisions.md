@@ -15,7 +15,7 @@ Key product and engineering choices made for the Desktop version, and why they e
 ## 2. Single-Action Opener Card Instead of a Full Monitoring Dashboard
 
 - **Problem:** Early drafts placed IP editors, device profiles, live TLS telemetry grids, and scrolling logs on the main screen at equal visual weight. For someone who just wants to open `192.168.1.1` and change a Wi-Fi password, that felt cluttered and technical.
-- **Decision:** The launchpad opens directly to one small, centered card with a single clear primary button (**Open Router Page (`192.168.1.1`)**) and a plain-English **Reset session** link underneath. Power-user options (changing the IP/port, picking a device compatibility profile, and viewing connection logs) stay neatly tucked inside collapsible sections until needed.
+- **Decision:** The opener starts with one primary button, **Open router page**. **Fix stuck login** sits beneath it, and changing devices or viewing connection details takes one click to expand. The page starts in the browser’s preferred supported language and remembers a manual English or Arabic choice for that browser and local address.
 
 ---
 
@@ -36,4 +36,4 @@ Key product and engineering choices made for the Desktop version, and why they e
 ## 5. Remembering Legacy Fallback Per Device
 
 - **Problem:** Some routers reject modern TLS 1.3 handshake extensions on port 443 and require an older TLS 1.0–1.2 handshake. Trying the modern handshake on every single image or script adds unnecessary delay.
-- **Decision:** Once a device falls back to the older TLS profile (or plain HTTP on port 80), the desktop bridge remembers that preference for that address in memory so subsequent requests load immediately. Clicking **Reset session** clears those remembered states if you switch or reboot hardware.
+- **Decision:** Once a device falls back to the older TLS profile (or plain HTTP on port 80), the desktop bridge remembers that preference for that address in memory so subsequent requests load immediately. Clicking **Fix stuck login** clears those remembered states if you switch or reboot hardware.

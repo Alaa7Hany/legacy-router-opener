@@ -384,7 +384,9 @@ func TestBridgeControlAPIAndSessionReset(t *testing.T) {
 	bodyStr := string(htmlBytes)
 	if res.StatusCode != http.StatusOK ||
 		!strings.Contains(bodyStr, `name="color-scheme" content="light dark"`) ||
-		!strings.Contains(bodyStr, `Open Router Page`) ||
+		!strings.Contains(bodyStr, `>Open router page</span>`) ||
+		!strings.Contains(bodyStr, `<summary id="language-switch"`) ||
+		!strings.Contains(bodyStr, `data-language="en" aria-pressed="true"`) ||
 		!strings.Contains(bodyStr, `<details id="options-panel">`) ||
 		!strings.Contains(bodyStr, `<details id="logs-panel">`) {
 		t.Fatalf("unexpected /_bridge response: status=%d", res.StatusCode)
@@ -433,7 +435,7 @@ func TestBridgeControlAPIAndSessionReset(t *testing.T) {
 	}
 	reloadedBytes, _ := io.ReadAll(reloadedRes.Body)
 	_ = reloadedRes.Body.Close()
-	if !strings.Contains(string(reloadedBytes), `Open Router Page (10.10.10.50:443)`) {
+	if !strings.Contains(string(reloadedBytes), `id="target-display" dir="ltr">10.10.10.50:443</bdi>`) {
 		t.Fatalf("expected updated target hydrated in /_bridge HTML")
 	}
 
@@ -449,6 +451,35 @@ func TestBridgeControlAPIAndSessionReset(t *testing.T) {
 	}
 	if setCookies := strings.Join(resetRes.Header.Values("Set-Cookie"), "\n"); !strings.Contains(setCookies, "iLOSession=; Path=/; Max-Age=0") {
 		t.Fatalf("expected Max-Age=0 eviction header for iLOSession, got %q", setCookies)
+	}
+}
+
+func TestDesktopPagesUseBrowserLanguage(t *testing.T) {
+	// Use a port that refuses immediately, so the request reaches the app's own error page.
+	conn, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	target := "http://" + conn.Addr().String()
+	conn.Close()
+	srv := NewServer(Options{InitialTarget: target})
+	for _, tc := range []struct {
+		path, label string
+		status      int
+	}{
+		{"/_bridge", "فتح صفحة الراوتر", http.StatusOK},
+		{"/", "تعذّر فتح صفحة الجهاز", http.StatusBadGateway},
+	} {
+		req := httptest.NewRequest(http.MethodGet, tc.path, nil)
+		req.Header.Set("Accept-Language", "ar-EG,en;q=0.8")
+		res := httptest.NewRecorder()
+		srv.ServeHTTP(res, req)
+		body := res.Body.String()
+		if res.Code != tc.status || !strings.Contains(body, `<html lang="ar" dir="rtl">`) ||
+			!strings.Contains(body, `data-language="ar" aria-pressed="true"`) ||
+			!strings.Contains(body, tc.label) || !strings.Contains(body, `dir="ltr">`+target+`</bdi>`) {
+			t.Errorf("%s did not render the expected Arabic page and left-to-right address (status %d)", tc.path, res.Code)
+		}
 	}
 }
 

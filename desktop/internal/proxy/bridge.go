@@ -29,7 +29,8 @@ func (s *Server) handleBridge(w http.ResponseWriter, r *http.Request) {
 	case (r.URL.Path == "/_bridge" || r.URL.Path == "/_bridge/") && r.Method == http.MethodGet:
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		snapshot := s.Snapshot()
-		_ = bridgeui.WriteBridge(w, snapshot.Target, snapshot.DetectedGateway, s.quitURL, snapshot)
+		language := bridgeui.SelectLanguage("", r.Header.Get("Accept-Language"))
+		_ = bridgeui.WriteBridge(w, language, snapshot.Target, snapshot.DetectedGateway, s.quitURL, snapshot)
 
 	case strings.HasPrefix(r.URL.Path, "/_bridge/assets/") && (r.Method == http.MethodGet || r.Method == http.MethodHead):
 		bridgeui.ServeAsset(w, r, strings.TrimPrefix(r.URL.Path, "/_bridge/assets/"))
@@ -102,6 +103,12 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
+
+	if s.watchOpenerTab != nil && r.URL.Query().Get("opener") == "1" &&
+		r.Header.Get("Sec-Fetch-Site") == "same-origin" {
+		endTab := s.watchOpenerTab()
+		defer endTab()
+	}
 
 	ch := s.subscribeSSE()
 	defer s.unsubscribeSSE(ch)

@@ -74,16 +74,16 @@ func (j *SessionCookieJar) SetSeedHuawei(enabled bool) {
 	}
 }
 
-// SaveCookiesFromHeaders parses upstream Set-Cookie headers into the jar and returns newly saved key=value entries.
-func (j *SessionCookieJar) SaveCookiesFromHeaders(setCookieHeaders []string) []string {
+// SaveCookiesFromHeaders updates the jar and reports whether any cookie was saved.
+func (j *SessionCookieJar) SaveCookiesFromHeaders(setCookieHeaders []string) bool {
 	if len(setCookieHeaders) == 0 {
-		return nil
+		return false
 	}
 
 	j.mu.Lock()
 	defer j.mu.Unlock()
 
-	var saved []string
+	saved := false
 	for _, header := range setCookieHeaders {
 		mainPart := strings.TrimSpace(strings.SplitN(header, ";", 2)[0])
 		eqIdx := strings.IndexByte(mainPart, '=')
@@ -103,7 +103,7 @@ func (j *SessionCookieJar) SaveCookiesFromHeaders(setCookieHeaders []string) []s
 			continue
 		}
 		j.cookies[key] = val
-		saved = append(saved, key+"="+val)
+		saved = true
 	}
 	return saved
 }

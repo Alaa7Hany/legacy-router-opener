@@ -41,6 +41,7 @@ type Server struct {
 	client          *upstream.Client
 	quitURL         string
 	stopping        <-chan struct{}
+	watchOpenerTab  func() func()
 }
 
 // Options configures a new proxy Server instance.
@@ -52,6 +53,7 @@ type Options struct {
 	OnStdoutLog     func(string)
 	QuitURL         string
 	Stopping        <-chan struct{}
+	WatchOpenerTab  func() func()
 }
 
 // NewServer constructs a fully initialized proxy Server.
@@ -85,6 +87,7 @@ func NewServer(opts Options) *Server {
 		onStdoutLog:     opts.OnStdoutLog,
 		quitURL:         opts.QuitURL,
 		stopping:        opts.Stopping,
+		watchOpenerTab:  opts.WatchOpenerTab,
 	}
 	s.client = upstream.NewClient(preset.MaxConcurrentSockets, s.appendLog)
 	return s

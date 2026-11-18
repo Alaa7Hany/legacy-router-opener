@@ -19,6 +19,7 @@ type desktopApp struct {
 	stopping      chan struct{}
 	quitRequested chan struct{}
 	serveErrors   chan error
+	tabs          *tabLifetime
 }
 
 func run(ctx context.Context, options launchOptions) error {
@@ -87,10 +88,18 @@ func startApp(options launchOptions) (*desktopApp, string, error) {
 		quitRequested: make(chan struct{}),
 		serveErrors:   make(chan error, len(listeners)+1),
 	}
-	quitHost := quitListener.Addr().String()
-	quit := newQuitHandler(quitHost, openerURL, sync.OnceFunc(func() {
+	requestStop := sync.OnceFunc(func() {
 		close(app.quitRequested)
-	}))
+	})
+	var startupTimeout time.Duration
+	if !options.noBrowser && !options.openRouter {
+		startupTimeout = openerStartupTimeout
+	}
+	app.tabs = newTabLifetime(startupTimeout, requestStop)
+	quitHost := quitListener.Addr().String()
+	quit := newQuitHandler(quitHost, openerURL, requestStop)
+	quit.watchTab = app.tabs.connect
+	quit.stopping = app.stopping
 	bridge := proxy.NewServer(proxy.Options{
 		ProxyPort:       port,
 		InitialTarget:   target,
@@ -99,6 +108,7 @@ func startApp(options launchOptions) (*desktopApp, string, error) {
 		OnStdoutLog:     func(line string) { fmt.Println(line) },
 		QuitURL:         "http://" + quitHost + quitPath,
 		Stopping:        app.stopping,
+		WatchOpenerTab:  app.tabs.connect,
 	})
 	app.bridge = &http.Server{
 		Handler:           withInstancePort(bridge, requestedPort),
@@ -127,6 +137,7 @@ func (app *desktopApp) serve(server *http.Server, listener net.Listener) {
 }
 
 func (app *desktopApp) shutdown() {
+	app.tabs.close()
 	close(app.stopping)
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()

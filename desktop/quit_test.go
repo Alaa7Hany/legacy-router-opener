@@ -91,14 +91,20 @@ func TestQuitClosesEventStreamAndListeners(t *testing.T) {
 		return string(body)
 	}
 	page := fetch(opener)
-	_, link, ok := strings.Cut(page, `class="link-btn" href="http://127.0.0.1:`)
-	port, _, foundEnd := strings.Cut(link, quitPath+`">Quit app</a>`)
+	_, link, ok := strings.Cut(page, `id="quit-link" class="link-btn" href="http://127.0.0.1:`)
+	port, _, foundEnd := strings.Cut(link, quitPath+`?lang=en"`)
 	if !ok || !foundEnd {
 		t.Fatal("opener omitted Quit link")
 	}
 	quitHost := "127.0.0.1:" + port
 	origin := "http://" + quitHost
-	confirmation := fetch(origin + quitPath)
+	quitURL := origin + quitPath + "?lang=ar"
+	confirmation := fetch(quitURL)
+	if !strings.Contains(confirmation, `<html lang="ar" dir="rtl">`) ||
+		!strings.Contains(confirmation, `action="/quit?lang=ar"`) ||
+		!strings.Contains(confirmation, "هل تريد إغلاق التطبيق؟") {
+		t.Fatal("confirmation did not carry the selected language into the form")
+	}
 	_, tokenField, ok := strings.Cut(confirmation, `name="token" value="`)
 	token, _, _ := strings.Cut(tokenField, `"`)
 	if !ok || token == "" {
@@ -110,7 +116,21 @@ func TestQuitClosesEventStreamAndListeners(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer stream.Body.Close()
-	req, err := http.NewRequest(http.MethodPost, origin+quitPath, strings.NewReader(url.Values{"token": {token}}.Encode()))
+	watchReq, err := http.NewRequest(http.MethodGet, origin+quitPath+"/events", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	watchReq.Header.Set("Sec-Fetch-Site", "same-origin")
+	confirmationStream, err := client.Do(watchReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer confirmationStream.Body.Close()
+	if confirmationStream.StatusCode != http.StatusOK ||
+		confirmationStream.Header.Get("Content-Type") != "text/event-stream" {
+		t.Fatal("the confirmation page could not start watching its tab")
+	}
+	req, err := http.NewRequest(http.MethodPost, quitURL, strings.NewReader(url.Values{"token": {token}}.Encode()))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -122,11 +142,14 @@ func TestQuitClosesEventStreamAndListeners(t *testing.T) {
 	}
 	body, readErr := io.ReadAll(result.Body)
 	result.Body.Close()
-	if readErr != nil || result.StatusCode != http.StatusOK || !strings.Contains(string(body), "Router Page Opener stopped") {
+	if readErr != nil || result.StatusCode != http.StatusOK || !strings.Contains(string(body), "تم إغلاق التطبيق") {
 		t.Fatalf("quit response = %d, error = %v", result.StatusCode, readErr)
 	}
 	if _, err := io.Copy(io.Discard, stream.Body); err != nil {
 		t.Fatalf("event stream did not close cleanly: %v", err)
+	}
+	if _, err := io.Copy(io.Discard, confirmationStream.Body); err != nil {
+		t.Fatalf("confirmation event stream did not close cleanly: %v", err)
 	}
 	select {
 	case <-stopped:

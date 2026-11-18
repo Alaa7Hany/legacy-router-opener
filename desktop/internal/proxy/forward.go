@@ -109,15 +109,14 @@ func (s *Server) handleProxy(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.Header().Set("X-Legacy-Router-Proxy", "1")
 		w.WriteHeader(http.StatusBadGateway)
-		_ = bridgeui.WriteError(w, target, err.Error())
+		language := bridgeui.SelectLanguage("", r.Header.Get("Accept-Language"))
+		_ = bridgeui.WriteError(w, language, target, err.Error())
 		return
 	}
 
 	setCookies := resp.Headers.Values("Set-Cookie")
-	if len(setCookies) > 0 {
-		if saved := jar.SaveCookiesFromHeaders(setCookies); len(saved) > 0 {
-			s.appendLog(fmt.Sprintf("[COOKIE] Saved: %s", strings.Join(saved, "; ")))
-		}
+	if jar.SaveCookiesFromHeaders(setCookies) {
+		s.appendLog("[COOKIE] Session saved")
 	}
 
 	computedMime := GetAccurateMimeType(targetPath, resp.Headers, resp.Body)

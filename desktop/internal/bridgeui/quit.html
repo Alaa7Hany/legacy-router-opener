@@ -1,26 +1,27 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="{{.Language}}" dir="{{.Direction}}">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>{{if .Token}}Quit Router Page Opener{{else}}Router Page Opener stopped{{end}}</title>
+  <title>{{if .Token}}{{.Messages.quit_title}}{{else}}{{.Messages.stopped_title}}{{end}}</title>
   <style>{{.CSS}}</style>
 </head>
 <body>
   <main class="card">
     {{if .Token}}
     <header class="header">
-      <h1>Quit Router Page Opener?</h1>
-      <p class="subtitle">Any router pages opened through the app will disconnect.</p>
+      <h1>{{.Messages.quit_title}}</h1>
+      <p class="subtitle">{{.Messages.quit_help}}</p>
     </header>
-    <form method="post" action="/quit">
+    <form method="post" action="/quit?lang={{.Language}}">
       <input type="hidden" name="token" value="{{.Token}}">
-      <button class="primary-btn" type="submit">Quit app</button>
+      <button class="primary-btn" type="submit">{{.Messages.quit}}</button>
     </form>
-    <footer class="app-footer"><a class="link-btn" href="{{.OpenerURL}}">Cancel</a></footer>
+    <footer class="app-footer"><a class="link-btn" href="{{.OpenerURL}}">{{.Messages.cancel}}</a></footer>
+    <script src="/quit/watch.js" defer></script>
     {{else}}
-    <h1>Router Page Opener stopped</h1>
-    <p class="subtitle">Open the app again to reconnect to your router.</p>
+    <h1>{{.Messages.stopped_title}}</h1>
+    <p class="subtitle">{{.Messages.stopped_help}}</p>
     {{end}}
   </main>
 </body>

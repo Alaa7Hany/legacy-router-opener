@@ -60,9 +60,9 @@ The Android app provides a 100% mobile, standalone solution. It runs an embedded
 ### Option A: Standalone Executable (Zero Dependencies — Recommended)
 1. Download `legacy-router-opener.exe` from [GitHub Releases](https://github.com/Alaa7Hany/legacy-router-page-opener/releases) and double-click it. **No installation required.**
 2. Your browser opens the opener card, usually at **`http://localhost:8080/_bridge`**.
-3. Click **Open Router Page** to launch your router dashboard in a new tab.
-4. Expand **Change IP or device type** to switch targets/profiles, or click **Reset session** if a router login gets stuck.
-5. Click **Quit app** in the opener and confirm when you’re done. Closing the browser tab leaves the app running. Double-click the executable to reopen the opener.
+3. Click **Open router page** to launch your router dashboard in a new tab. Click **Language** next to the globe to choose **English** or **العربية**.
+4. Expand **Change device** to open a different address, or click **Fix stuck login** to clear the saved sign-in. The **?** buttons explain both options.
+5. Keep the opener tab open while using your router page. Closing the last opener tab stops the app after a few seconds. You can also click **Quit app** and confirm.
 
 See [Desktop Documentation](desktop/docs/README.md) for plain-English guides on how it works, design decisions, and troubleshooting.
 

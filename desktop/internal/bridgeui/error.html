@@ -1,29 +1,45 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="{{.Language}}" dir="{{.Direction}}">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="light dark">
-  <title>Could Not Reach Device — Router Page Opener</title>
+  <title data-message="error_title">{{.Messages.error_title}}</title>
+  <link rel="stylesheet" href="/_bridge/assets/bridge.css">
   <link rel="stylesheet" href="/_bridge/assets/error.css">
 </head>
 <body>
-  <main>
-    <h1>Could Not Reach Device</h1>
-    <p>No response from <strong>{{.Target}}</strong></p>
-    <pre>{{.Message}}</pre>
-    <form id="switch-form">
-      <label for="new-target">Try another address or port:</label>
-      <div class="row">
-        <input id="new-target" name="target" type="text" value="{{.Target}}" required autocorrect="off" autocapitalize="none" spellcheck="false">
-        <button type="submit" class="primary">Switch &amp; Retry</button>
+  <main class="card">
+    <header class="header">
+      <div class="title-row">
+        <h1 data-message="error_title">{{.Messages.error_title}}</h1>
+        {{template "language-switch.html" .}}
       </div>
-    </form>
-    <div class="row">
-      <button id="retry-btn" type="button" class="secondary">Retry</button>
-      <a href="/_bridge" class="btn secondary">Back to Opener</a>
+      <p class="subtitle"><span data-message="device_address">{{.Messages.device_address}}</span> <bdi dir="ltr">{{.Target}}</bdi></p>
+      <p class="recovery-hint" data-message="error_help">{{.Messages.error_help}}</p>
+    </header>
+    <button id="retry-btn" type="button" class="primary-btn" data-message="try_again">{{.Messages.try_again}}</button>
+    <div class="disclosures">
+      <details>
+        <summary data-message="try_another_address">{{.Messages.try_another_address}}</summary>
+        <form id="switch-form" class="panel-body" novalidate>
+          <div class="field">
+            <label for="new-target" data-message="device_address">{{.Messages.device_address}}</label>
+            <input id="new-target" name="target" type="text" value="{{.Target}}" dir="ltr" required
+              autocorrect="off" autocapitalize="none" spellcheck="false" aria-describedby="switch-error">
+            <p id="switch-error" class="error-text" role="status" hidden></p>
+          </div>
+          <button id="switch-btn" type="submit" class="secondary-btn" data-message="open_address">{{.Messages.open_address}}</button>
+        </form>
+      </details>
+      <details>
+        <summary data-message="technical_details">{{.Messages.technical_details}}</summary>
+        <pre dir="ltr" lang="en">{{.Message}}</pre>
+      </details>
     </div>
+    <footer class="app-footer"><a href="/_bridge" class="link-btn" data-message="back_to_opener">{{.Messages.back_to_opener}}</a></footer>
   </main>
-  <script src="/_bridge/assets/error.js" defer></script>
+  <script id="messages" type="application/json">{{.Catalog}}</script>
+  <script src="/_bridge/assets/error.js" type="module"></script>
 </body>
 </html>

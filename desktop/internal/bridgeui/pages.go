@@ -18,7 +18,7 @@ var pages = template.Must(template.ParseFS(files, "*.html"))
 //go:embed assets/bridge.css
 var bridgeCSS string
 
-func WriteBridge(w io.Writer, target, gateway, quitURL string, state any) error {
+func WriteBridge(w io.Writer, language, target, gateway, quitURL string, state any) error {
 	if target == "" {
 		target = "192.168.1.1"
 	}
@@ -26,21 +26,26 @@ func WriteBridge(w io.Writer, target, gateway, quitURL string, state any) error 
 		gateway = "192.168.1.1"
 	}
 	data := struct {
+		pageLanguage
 		Target, Gateway, QuitURL string
 		State                    any
-	}{target, gateway, quitURL, state}
+	}{forLanguage(language), target, gateway, quitURL, state}
 	return pages.ExecuteTemplate(w, "bridge.html", data)
 }
 
-func WriteError(w io.Writer, target, message string) error {
-	return pages.ExecuteTemplate(w, "error.html", struct{ Target, Message string }{target, message})
+func WriteError(w io.Writer, language, target, message string) error {
+	return pages.ExecuteTemplate(w, "error.html", struct {
+		pageLanguage
+		Target, Message string
+	}{forLanguage(language), target, message})
 }
 
-func WriteQuit(w io.Writer, openerURL, token string) error {
+func WriteQuit(w io.Writer, language, openerURL, token string) error {
 	return pages.ExecuteTemplate(w, "quit.html", struct {
+		pageLanguage
 		OpenerURL, Token string
 		CSS              template.CSS
-	}{openerURL, token, template.CSS(bridgeCSS)})
+	}{forLanguage(language), openerURL, token, template.CSS(bridgeCSS)})
 }
 
 func ServeAsset(w http.ResponseWriter, r *http.Request, name string) {

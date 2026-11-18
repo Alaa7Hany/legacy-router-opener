@@ -1,8 +1,10 @@
-(function () {
+import { activateLanguage } from './locale.js';
+
+{
   const form = document.getElementById('config-form');
   const targetInput = document.getElementById('target-ip');
   const targetError = document.getElementById('target-error');
-  const targetSubtitle = document.getElementById('target-subtitle');
+  const targetDisplay = document.getElementById('target-display');
   const detectedGatewaySpan = document.getElementById('detected-gateway');
   const presetSelect = document.getElementById('preset-select');
   const presetHint = document.getElementById('preset-hint');
@@ -13,45 +15,40 @@
   const clearLogsBtn = document.getElementById('clear-logs-btn');
   const actionBanner = document.getElementById('action-banner');
   const tlsSummary = document.getElementById('tls-summary');
+  const connectionIdle = document.getElementById('connection-idle');
   const logBox = document.getElementById('log-box');
+  const logLines = document.getElementById('log-lines');
+  const logsEmpty = document.getElementById('logs-empty');
   const optionsPanel = document.getElementById('options-panel');
 
   let presets = [];
   let serverTarget = '';
   let serverPreset = 'auto';
   let userEditedTarget = false;
+  let userEditedPreset = false;
 
-  function showBanner(msg, kind) {
-    actionBanner.textContent = msg;
-    actionBanner.dataset.kind = kind || 'info';
+  const locale = activateLanguage(() => {
+    updatePresetLabels();
+    updatePresetDescription();
+  });
+
+  function showBanner(key, kind) {
+    locale.setMessage(actionBanner, key);
+    actionBanner.dataset.kind = kind;
     actionBanner.hidden = false;
-  }
-
-  function updateHeroText(displayTarget) {
-    const clean = (displayTarget || '192.168.1.1').trim();
-    openBtn.textContent = 'Open Router Page (' + clean + ') ↗';
-    targetSubtitle.innerHTML = 'Ready to open <strong>' + escapeHtml(clean) + '</strong>';
-  }
-
-  function escapeHtml(str) {
-    return String(str)
-      .replace(/&/g, '&amp;')
-      .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;')
-      .replace(/"/g, '&quot;');
   }
 
   function validateTarget() {
     const val = targetInput.value.trim();
     if (!val) {
       targetInput.setAttribute('aria-invalid', 'true');
-      targetError.textContent = 'Enter a router IP or address (for example, 192.168.1.1).';
+      locale.setMessage(targetError, 'address_required');
       targetError.hidden = false;
       return false;
     }
     if (/\s/.test(val)) {
       targetInput.setAttribute('aria-invalid', 'true');
-      targetError.textContent = 'Address cannot contain spaces.';
+      locale.setMessage(targetError, 'address_spaces');
       targetError.hidden = false;
       return false;
     }
@@ -74,16 +71,31 @@
     }
   });
 
+  function updatePresetLabels() {
+    for (const option of presetSelect.options) {
+      option.textContent = locale.text('preset_' + option.value + '_name');
+    }
+  }
+
   function updatePresetDescription() {
     const p = presets.find((item) => item.id === presetSelect.value);
     if (p) {
-      presetHint.textContent = p.description;
+      presetHint.textContent = locale.text('preset_' + p.id + '_help');
     }
   }
 
   presetSelect.addEventListener('change', () => {
+    userEditedPreset = true;
     updatePresetDescription();
   });
+
+  for (const button of document.querySelectorAll('.help-button')) {
+    const help = document.getElementById(button.getAttribute('aria-controls'));
+    button.addEventListener('click', () => {
+      help.hidden = !help.hidden;
+      button.setAttribute('aria-expanded', String(!help.hidden));
+    });
+  }
 
   function logClass(line) {
     if (line.includes('[ERR]') || line.includes('Error') || line.includes('failed')) return 'log-error';
@@ -94,17 +106,14 @@
   }
 
   function renderLogs(logs) {
-    if (!logs || logs.length === 0) {
-      logBox.innerHTML = '<div class="log-empty">No connection activity yet.</div>';
-      return;
-    }
     const nearBottom = (logBox.scrollHeight - logBox.scrollTop - logBox.clientHeight) < 40;
-    logBox.innerHTML = '';
+    logsEmpty.hidden = logs.length > 0;
+    logLines.replaceChildren();
     for (const line of logs) {
       const div = document.createElement('div');
       div.className = 'log-line ' + logClass(line);
       div.textContent = line;
-      logBox.appendChild(div);
+      logLines.appendChild(div);
     }
     if (nearBottom) {
       logBox.scrollTop = logBox.scrollHeight;
@@ -116,18 +125,18 @@
 
     if (presets.length === 0 && Array.isArray(state.presets)) {
       presets = state.presets;
-      presetSelect.innerHTML = '';
       for (const p of presets) {
         const opt = document.createElement('option');
         opt.value = p.id;
-        opt.textContent = p.name;
+        opt.dir = 'auto';
         presetSelect.appendChild(opt);
       }
+      updatePresetLabels();
     }
 
     if (state.preset) {
       serverPreset = state.preset;
-      if (!presetSelect.matches(':focus')) {
+      if (!userEditedPreset && !presetSelect.matches(':focus')) {
         presetSelect.value = state.preset;
       }
     }
@@ -138,7 +147,7 @@
       if (!userEditedTarget && !targetInput.matches(':focus')) {
         targetInput.value = state.target;
       }
-      updateHeroText(state.target);
+      targetDisplay.textContent = state.target;
     }
 
     if (state.detectedGateway) {
@@ -150,8 +159,11 @@
       let line = tls.transport + ' (' + tls.protocol + ')';
       if (tls.cipherSuite) line += ' · ' + tls.cipherSuite;
       tlsSummary.textContent = line;
+      tlsSummary.hidden = false;
+      connectionIdle.hidden = true;
     } else {
-      tlsSummary.textContent = state.resolvedTarget ? ('Ready · ' + state.resolvedTarget) : 'No connections yet';
+      tlsSummary.hidden = true;
+      connectionIdle.hidden = false;
     }
 
     if (Array.isArray(state.logs)) {
@@ -193,12 +205,13 @@
       if (!res.ok) {
         if (pendingTab) pendingTab.close();
         optionsPanel.open = true;
-        showBanner(data.error || 'Could not update address.', 'error');
+        showBanner('changes_failed', 'error');
         return;
       }
-      userEditedTarget = false;
+      if (targetInput.value.trim() === nextTarget) userEditedTarget = false;
+      if (presetSelect.value === nextPreset) userEditedPreset = false;
       applyState(data);
-      showBanner('Target updated to ' + data.resolvedTarget + '.', 'success');
+      showBanner('changes_saved', 'success');
 
       if (openDashboard) {
         if (pendingTab) {
@@ -207,9 +220,9 @@
           window.location.href = '/';
         }
       }
-    } catch (err) {
+    } catch {
       if (pendingTab) pendingTab.close();
-      showBanner('Could not reach local proxy: ' + err.message, 'error');
+      showBanner('changes_failed', 'error');
     } finally {
       openBtn.disabled = false;
       saveBtn.disabled = false;
@@ -230,15 +243,17 @@
     try {
       const res = await fetch('/_bridge/api/detect-gateway', { method: 'POST' });
       const data = await res.json();
-      if (res.ok && data.gateway) {
-        targetInput.value = data.gateway;
-        userEditedTarget = true;
-        validateTarget();
-        detectedGatewaySpan.textContent = data.gateway;
-        showBanner('Filled detected gateway: ' + data.gateway + '. Click Apply changes or Open Router Page.', 'success');
+      if (!res.ok || !data.gateway) {
+        showBanner('detection_failed', 'error');
+        return;
       }
-    } catch (err) {
-      showBanner('Gateway detection failed: ' + err.message, 'error');
+      targetInput.value = data.gateway;
+      userEditedTarget = true;
+      validateTarget();
+      detectedGatewaySpan.textContent = data.gateway;
+      showBanner('detected_saved', 'success');
+    } catch {
+      showBanner('detection_failed', 'error');
     } finally {
       detectBtn.disabled = false;
     }
@@ -248,21 +263,30 @@
     resetBtn.disabled = true;
     try {
       const res = await fetch('/_bridge/api/reset', { method: 'POST' });
-      const data = await res.json();
-      if (res.ok) {
-        applyState(data);
-        showBanner('Session cleared. You can open the router page again.', 'success');
+      if (!res.ok) {
+        showBanner('login_fix_failed', 'error');
+        return;
       }
-    } catch (err) {
-      showBanner('Reset failed: ' + err.message, 'error');
+      applyState(await res.json());
+      showBanner('login_fixed', 'success');
+    } catch {
+      showBanner('login_fix_failed', 'error');
     } finally {
       resetBtn.disabled = false;
     }
   });
 
   clearLogsBtn.addEventListener('click', async () => {
-    await fetch('/_bridge/api/logs/clear', { method: 'POST' });
-    renderLogs([]);
+    clearLogsBtn.disabled = true;
+    try {
+      const res = await fetch('/_bridge/api/logs/clear', { method: 'POST' });
+      if (res.ok) renderLogs([]);
+      else showBanner('clear_failed', 'error');
+    } catch {
+      showBanner('clear_failed', 'error');
+    } finally {
+      clearLogsBtn.disabled = false;
+    }
   });
 
   function hydrateInitialState() {
@@ -274,9 +298,10 @@
     } catch (_) {}
   }
 
+  let events;
   function connectSSE() {
-    const es = new EventSource('/_bridge/events');
-    es.onmessage = (event) => {
+    events = new EventSource('/_bridge/events?opener=1');
+    events.onmessage = (event) => {
       try {
         applyState(JSON.parse(event.data));
       } catch (_) {}
@@ -284,5 +309,6 @@
   }
 
   hydrateInitialState();
-  connectSSE();
-})();
+  window.addEventListener('pageshow', connectSSE);
+  window.addEventListener('pagehide', () => events?.close());
+}

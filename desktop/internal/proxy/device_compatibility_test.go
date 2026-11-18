@@ -16,6 +16,8 @@ import (
 	"github.com/alaa/legacyrouteropener/internal/upstream"
 )
 
+const simulatedSessionID = "fixture-session"
+
 func TestDesktopPresetsPreserveAuthenticatedNavigation(t *testing.T) {
 	// These fixtures exercise browser flows against simulated web admin pages.
 	// They represent connection and redirect behaviors rather than specific firmware.
@@ -80,6 +82,15 @@ func TestDesktopPresetsPreserveAuthenticatedNavigation(t *testing.T) {
 				t.Fatalf("could not open the next settings page: %q", body)
 			}
 
+			res, err = client.Get(local.URL + "/_bridge/api/state")
+			body = requireDeviceResponse(t, res, err, http.StatusOK)
+			if strings.Contains(body, simulatedSessionID) {
+				t.Fatal("connection details exposed a session cookie value")
+			}
+			if !strings.Contains(body, "[COOKIE] Session saved") {
+				t.Fatal("connection details omitted the session-saved message")
+			}
+
 			res, err = client.Post(local.URL+"/_bridge/api/reset", "application/json", nil)
 			requireDeviceResponse(t, res, err, http.StatusOK)
 			res, err = client.Get(local.URL + "/settings/network")
@@ -97,7 +108,7 @@ func simulatedAdminPage(t *testing.T, tlsVersion uint16, redirectHost string) *h
 			return
 		}
 		http.SetCookie(w, &http.Cookie{
-			Name: "device_session", Value: "fixture-session", Path: "/login",
+			Name: "device_session", Value: simulatedSessionID, Path: "/login",
 			Secure: true, HttpOnly: true, SameSite: http.SameSiteNoneMode,
 		})
 		host := redirectHost
@@ -112,7 +123,7 @@ func simulatedAdminPage(t *testing.T, tlsVersion uint16, redirectHost string) *h
 	} {
 		mux.HandleFunc("GET "+path, func(w http.ResponseWriter, r *http.Request) {
 			cookie, err := r.Cookie("device_session")
-			if err != nil || cookie.Value != "fixture-session" {
+			if err != nil || cookie.Value != simulatedSessionID {
 				http.Error(w, "sign in first", http.StatusUnauthorized)
 				return
 			}

@@ -1,0 +1,14 @@
+<details class="language-picker">
+  <summary id="language-switch" class="language-trigger">
+    <span class="language-globe" aria-hidden="true"></span>
+    <span data-message="language_label">{{.Messages.language_label}}</span>
+  </summary>
+  <div class="language-options">
+    <button type="button" class="language-option" data-language="en" aria-pressed="{{eq .Language "en"}}">
+      <span lang="en" dir="ltr">{{.Catalog.en.language_name}}</span><span class="language-check" aria-hidden="true">✓</span>
+    </button>
+    <button type="button" class="language-option" data-language="ar" aria-pressed="{{eq .Language "ar"}}">
+      <span lang="ar" dir="rtl">{{.Catalog.ar.language_name}}</span><span class="language-check" aria-hidden="true">✓</span>
+    </button>
+  </div>
+</details>

@@ -1,37 +1,50 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="{{.Language}}" dir="{{.Direction}}">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="light dark">
-  <title>Router Page Opener</title>
+  <title data-message="app_title">{{.Messages.app_title}}</title>
   <link rel="stylesheet" href="/_bridge/assets/bridge.css">
 </head>
 <body>
   <main class="card">
     <header class="header">
-      <h1>Router Page Opener</h1>
-      <p id="target-subtitle" class="subtitle">Ready to open <strong>{{.Target}}</strong></p>
+      <div class="title-row">
+        <h1 data-message="app_title">{{.Messages.app_title}}</h1>
+        {{template "language-switch.html" .}}
+      </div>
+      <p class="subtitle"><span data-message="device_address">{{.Messages.device_address}}</span> <bdi id="target-display" dir="ltr">{{.Target}}</bdi></p>
     </header>
 
     <form id="config-form" novalidate>
-      <button id="open-btn" type="submit" class="primary-btn">Open Router Page ({{.Target}}) ↗</button>
+      <button id="open-btn" type="submit" class="primary-btn">
+        <span data-message="open_router">{{.Messages.open_router}}</span><span aria-hidden="true" class="open-arrow">↗</span>
+      </button>
 
       <div class="helper-row">
-        <span>Page stuck or says already logged in?</span>
-        <button id="reset-btn" type="button" class="link-btn">Reset session</button>
+        <button id="reset-btn" type="button" class="link-btn" data-message="fix_login">{{.Messages.fix_login}}</button>
+        <button type="button" class="help-button" aria-expanded="false" aria-controls="login-help"
+          data-message-label="login_help_label" aria-label="{{.Messages.login_help_label}}">?</button>
       </div>
+      <p id="login-help" class="help-text" data-message="login_help" hidden>{{.Messages.login_help}}</p>
 
       <div id="action-banner" class="status-banner" role="status" aria-live="polite" hidden></div>
 
       <div class="disclosures">
         <details id="options-panel">
-          <summary>Change IP or device type</summary>
+          <summary data-message="change_device">{{.Messages.change_device}}</summary>
           <div class="panel-body">
             <div class="field">
               <div class="label-row">
-                <label for="target-ip">Router or device address</label>
-                <button id="detect-btn" type="button" class="link-btn">Use detected (<span id="detected-gateway">{{.Gateway}}</span>)</button>
+                <div class="field-label">
+                  <label for="target-ip" data-message="device_address">{{.Messages.device_address}}</label>
+                  <button type="button" class="help-button" aria-expanded="false" aria-controls="address-help"
+                    data-message-label="address_help_label" aria-label="{{.Messages.address_help_label}}">?</button>
+                </div>
+                <button id="detect-btn" type="button" class="link-btn">
+                  <span data-message="use_detected">{{.Messages.use_detected}}</span> <bdi id="detected-gateway" dir="ltr">{{.Gateway}}</bdi>
+                </button>
               </div>
               <input
                 id="target-ip"
@@ -44,42 +57,54 @@
                 autocapitalize="none"
                 spellcheck="false"
                 enterkeyhint="go"
-                aria-describedby="target-hint target-error"
+                dir="ltr"
+                aria-describedby="target-error"
               >
-              <p id="target-hint" class="hint">Add :port or http:// if needed (e.g. 192.168.0.1 or 10.0.0.5:8443).</p>
+              <p id="address-help" class="help-text" hidden>
+                <span data-message="address_help">{{.Messages.address_help}}</span>
+                <span data-message="example">{{.Messages.example}}</span> <bdi dir="ltr">192.168.1.1</bdi>.
+              </p>
               <p id="target-error" class="error-text" hidden></p>
             </div>
 
             <div class="field">
-              <label for="preset-select">Device compatibility profile</label>
-              <select id="preset-select" name="preset" aria-describedby="preset-hint"></select>
-              <p id="preset-hint" class="hint">Balanced defaults for home routers and older hardware.</p>
+              <label for="preset-select" data-message="device_type">{{.Messages.device_type}}</label>
+              <select id="preset-select" name="preset" aria-describedby="preset-hint" dir="auto"></select>
+              <p id="preset-hint" class="hint">{{.Messages.preset_auto_help}}</p>
             </div>
 
-            <button id="save-btn" type="button" class="secondary-btn">Apply changes</button>
+            <button id="save-btn" type="button" class="secondary-btn" data-message="apply">{{.Messages.apply}}</button>
           </div>
         </details>
 
         <details id="logs-panel">
-          <summary>Connection logs</summary>
+          <summary data-message="connection_details">{{.Messages.connection_details}}</summary>
           <div class="panel-body">
             <div class="logs-meta">
-              <span id="tls-summary" class="tls-line">No connections yet</span>
-              <button id="clear-logs-btn" type="button" class="link-btn">Clear</button>
+              <span class="tls-line">
+                <span id="connection-idle" data-message="connection_idle">{{.Messages.connection_idle}}</span>
+                <bdi id="tls-summary" dir="ltr" lang="en" hidden></bdi>
+              </span>
+              <button id="clear-logs-btn" type="button" class="link-btn" data-message="clear">{{.Messages.clear}}</button>
             </div>
-            <div id="log-box" class="log-box" role="log" aria-label="Connection activity log">
-              <div class="log-empty">No connection activity yet.</div>
+            <div id="log-box" class="log-box" role="log" data-message-label="logs_label" aria-label="{{.Messages.logs_label}}">
+              <div id="logs-empty" class="log-empty" data-message="logs_empty">{{.Messages.logs_empty}}</div>
+              <div id="log-lines" dir="ltr" lang="en"></div>
             </div>
           </div>
         </details>
       </div>
     </form>
     {{if .QuitURL}}
-    <footer class="app-footer"><a class="link-btn" href="{{.QuitURL}}">Quit app</a></footer>
+    <footer class="app-footer">
+      <p class="subtitle" data-message="keep_tab_open">{{.Messages.keep_tab_open}}</p>
+      <a id="quit-link" class="link-btn" href="{{.QuitURL}}?lang={{.Language}}" data-message="quit">{{.Messages.quit}}</a>
+    </footer>
     {{end}}
   </main>
 
   <script id="initial-state" type="application/json">{{.State}}</script>
-  <script src="/_bridge/assets/bridge.js" defer></script>
+  <script id="messages" type="application/json">{{.Catalog}}</script>
+  <script src="/_bridge/assets/bridge.js" type="module"></script>
 </body>
 </html>
