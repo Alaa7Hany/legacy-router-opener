@@ -1,0 +1,36 @@
+name: Android CI
+
+on:
+  push:
+    branches: [main]
+    paths: ['android/**', '.github/workflows/ci-android.yml']
+  pull_request:
+    paths: ['android/**', '.github/workflows/ci-android.yml']
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: android
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v4
+      - run: sdkmanager 'platforms;android-35' 'build-tools;34.0.0'
+      - run: ./gradlew testDebugUnitTest lintDebug assembleDebug assembleRelease
+      - name: Verify a test-signed release APK
+        run: |
+          keytool -genkeypair -keystore "$RUNNER_TEMP/router-smoke.p12" -storetype PKCS12 \
+            -storepass android -keypass android -alias router-smoke -keyalg RSA -keysize 2048 \
+            -dname 'CN=Router CI Smoke Test' -validity 30
+          signer="$ANDROID_HOME/build-tools/34.0.0/apksigner"
+          "$signer" sign --ks "$RUNNER_TEMP/router-smoke.p12" --ks-pass pass:android \
+            --out "$RUNNER_TEMP/router-smoke.apk" app/build/outputs/apk/release/app-release-unsigned.apk
+          "$signer" verify --verbose "$RUNNER_TEMP/router-smoke.apk"

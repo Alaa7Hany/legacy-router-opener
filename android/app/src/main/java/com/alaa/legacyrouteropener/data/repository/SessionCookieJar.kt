@@ -1,66 +1,37 @@
 package com.alaa.legacyrouteropener.data.repository
 
-import java.util.concurrent.ConcurrentHashMap
+import java.net.CookieManager
+import java.net.CookiePolicy
+import java.net.URI
 
-class SessionCookieJar {
+internal class SessionCookieJar(seedHuawei: Boolean) {
+    private val manager = CookieManager(null, CookiePolicy.ACCEPT_ORIGINAL_SERVER)
+    private val seed = if (seedHuawei) mapOf(
+        "FirstMenu" to "Admin_0",
+        "SecondMenu" to "Admin_0_0",
+        "ThirdMenu" to "Admin_0_0_0",
+        "Language" to "en"
+    ) else emptyMap()
 
-    companion object {
-        val HUAWEI_INITIAL_COOKIES = mapOf(
-            "FirstMenu" to "Admin_0",
-            "SecondMenu" to "Admin_0_0",
-            "ThirdMenu" to "Admin_0_0_0",
-            "Language" to "en"
-        )
-        private val MAX_AGE_ZERO_REGEX = Regex(""";\s*max-age\s*=\s*0\b""", RegexOption.IGNORE_CASE)
+    @Synchronized
+    fun save(uri: URI, cookies: List<String>) {
+        manager.put(uri, mapOf("Set-Cookie" to cookies))
     }
 
-    private val cookies = ConcurrentHashMap<String, String>().apply {
-        putAll(HUAWEI_INITIAL_COOKIES)
-    }
-
-    fun saveCookiesFromHeaders(setCookieHeaders: List<String>?) {
-        if (setCookieHeaders.isNullOrEmpty()) return
-
-        for (header in setCookieHeaders) {
-            val mainPart = header.split(";").firstOrNull()?.trim() ?: continue
-            val eqIndex = mainPart.indexOf('=')
-            if (eqIndex > 0) {
-                val key = mainPart.substring(0, eqIndex).trim()
-                val value = mainPart.substring(eqIndex + 1).trim()
-                if (key.isEmpty()) continue
-
-                val isExpired = MAX_AGE_ZERO_REGEX.containsMatchIn(header)
-                if (isExpired || value.isEmpty() || value.equals("deleted", ignoreCase = true)) {
-                    cookies.remove(key)
-                } else {
-                    cookies[key] = value
+    @Synchronized
+    fun merge(uri: URI, browserCookies: List<String>): String {
+        val stored = manager.get(uri, emptyMap())["Cookie"].orEmpty()
+            .map { it.substringBefore("; $") }
+        val keys = (browserCookies + stored).flatMap { it.split(';') }
+            .map { it.substringBefore('=').trim() }.toSet()
+        val seeded = seed.filterKeys { it !in keys }.map { (key, value) -> "$key=$value" }
+        val storedOnly = stored.flatMap { it.split(';') }.map(String::trim)
+            .filter { it.isNotEmpty() && !it.startsWith('$') }
+            .filter { cookie ->
+                browserCookies.none { header ->
+                    header.split(';').any { it.trim().substringBefore('=') == cookie.substringBefore('=') }
                 }
             }
-        }
-    }
-
-    fun getMergedCookieHeader(incomingBrowserCookies: String?): String {
-        val merged = LinkedHashMap<String, String>()
-        merged.putAll(cookies)
-
-        if (!incomingBrowserCookies.isNullOrBlank()) {
-            incomingBrowserCookies.split(";").forEach { part ->
-                val eqIndex = part.indexOf('=')
-                if (eqIndex > 0) {
-                    val key = part.substring(0, eqIndex).trim()
-                    val value = part.substring(eqIndex + 1).trim()
-                    if (key.isNotEmpty()) {
-                        merged[key] = value
-                    }
-                }
-            }
-        }
-
-        return merged.entries.joinToString("; ") { "${it.key}=${it.value}" }
-    }
-
-    fun clear() {
-        cookies.clear()
-        cookies.putAll(HUAWEI_INITIAL_COOKIES)
+        return (browserCookies + storedOnly + seeded).joinToString("; ")
     }
 }

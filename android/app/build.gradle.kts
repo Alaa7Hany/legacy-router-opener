@@ -1,7 +1,92 @@
+import org.objectweb.asm.ClassReader
+import org.objectweb.asm.ClassVisitor
+import org.objectweb.asm.ClassWriter
+import org.objectweb.asm.Label
+import org.objectweb.asm.MethodVisitor
+import org.objectweb.asm.Opcodes.*
+import java.util.zip.ZipEntry
+import java.util.zip.ZipFile
+import java.util.zip.ZipOutputStream
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
     id("org.jetbrains.kotlin.plugin.compose")
+}
+
+val legacyTlsArtifact by configurations.creating {
+    isTransitive = false
+    isCanBeConsumed = false
+}
+val legacyTlsJar = layout.buildDirectory.file("patched-libraries/bctls-legacy-1.78.1.jar")
+val patchLegacyTls = tasks.register("patchLegacyTls") {
+    inputs.files(legacyTlsArtifact)
+    outputs.file(legacyTlsJar)
+    doLast {
+        val output = legacyTlsJar.get().asFile
+        output.parentFile.mkdirs()
+        ZipFile(legacyTlsArtifact.singleFile).use { source ->
+            ZipOutputStream(output.outputStream().buffered()).use { target ->
+                var patched = 0
+                source.entries().asSequence().forEach { entry ->
+                    // The source signature covers the unmodified archive.
+                    if (entry.name.matches(Regex("META-INF/[^/]+\\.(SF|DSA|RSA|EC)", RegexOption.IGNORE_CASE))) {
+                        return@forEach
+                    }
+                    target.putNextEntry(ZipEntry(entry.name).apply { time = 0 })
+                    source.getInputStream(entry).use { content ->
+                        if (entry.name.endsWith("org/bouncycastle/tls/TlsUtils.class")) {
+                            target.write(restoreLegacyRsaRc4Mappings(content.readBytes()))
+                            patched++
+                        } else {
+                            content.copyTo(target)
+                        }
+                    }
+                    target.closeEntry()
+                }
+                check(patched == 2) { "Expected base and Java 9 TlsUtils classes in Bouncy Castle 1.78.1" }
+            }
+        }
+    }
+}
+
+// BC 1.78.1 still supports SSLv3 and stream records but omits the two RSA/RC4 suite
+// mappings from TlsUtils. The app advertises these suites only in its legacy profiles.
+fun restoreLegacyRsaRc4Mappings(bytes: ByteArray): ByteArray {
+    val reader = ClassReader(bytes)
+    val writer = ClassWriter(reader, ClassWriter.COMPUTE_MAXS)
+    val mappings = mapOf(
+        "getKeyExchangeAlgorithm" to (1 to 1), // RSA
+        "getEncryptionAlgorithm" to (2 to 2), // RC4_128
+        "getMACAlgorithm" to (1 to 2) // HMAC MD5, HMAC SHA-1
+    )
+    val patched = mutableSetOf<String>()
+    reader.accept(object : ClassVisitor(ASM9, writer) {
+        override fun visitMethod(access: Int, name: String, descriptor: String, signature: String?,
+            exceptions: Array<out String>?): MethodVisitor {
+            val delegate = super.visitMethod(access, name, descriptor, signature, exceptions)
+            val values = mappings[name] ?: return delegate
+            if (descriptor != "(I)I") return delegate
+            patched.add(name)
+            return object : MethodVisitor(ASM9, delegate) {
+                override fun visitCode() {
+                    super.visitCode()
+                    for ((suite, value) in listOf(4 to values.first, 5 to values.second)) {
+                        val next = Label()
+                        visitVarInsn(ILOAD, 0)
+                        visitLdcInsn(suite)
+                        visitJumpInsn(IF_ICMPNE, next)
+                        visitLdcInsn(value)
+                        visitInsn(IRETURN)
+                        visitLabel(next)
+                        visitFrame(F_SAME, 0, null, 0, null)
+                    }
+                }
+            }
+        }
+    }, 0)
+    check(patched == mappings.keys) { "Unexpected Bouncy Castle cipher table" }
+    return writer.toByteArray()
 }
 
 android {
@@ -23,7 +108,8 @@ android {
 
     buildTypes {
         release {
-            isMinifyEnabled = false
+            isMinifyEnabled = true
+            isShrinkResources = true
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
@@ -42,6 +128,7 @@ android {
 
     buildFeatures {
         compose = true
+        buildConfig = true
     }
 
     packaging {
@@ -69,22 +156,28 @@ dependencies {
     implementation("androidx.compose.ui:ui-graphics")
     implementation("androidx.compose.ui:ui-tooling-preview")
     implementation("androidx.compose.material3:material3")
-    implementation("androidx.compose.material:material-icons-extended")
 
     // Coroutines
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
 
-    // Networking: OkHttp for HTTPS connection handling with custom TLS
-    implementation("com.squareup.okhttp3:okhttp:4.12.0")
-
     // Bouncy Castle for Legacy TLS 1.0/1.1 & obsolete cipher support on Android 10+
     implementation("org.bouncycastle:bcprov-jdk18on:1.78.1")
-    implementation("org.bouncycastle:bctls-jdk18on:1.78.1")
+    implementation("org.bouncycastle:bcutil-jdk18on:1.78.1")
+    legacyTlsArtifact("org.bouncycastle:bctls-jdk18on:1.78.1")
+    implementation(files(legacyTlsJar).builtBy(patchLegacyTls))
 
-    // Lightweight Embedded Local Proxy Server
-    implementation("org.nanohttpd:nanohttpd:2.3.1")
+    testImplementation("junit:junit:4.13.2")
+    testImplementation("org.bouncycastle:bcpkix-jdk18on:1.78.1")
 
     // Debug tooling
     debugImplementation("androidx.compose.ui:ui-tooling")
     debugImplementation("androidx.compose.ui:ui-test-manifest")
+}
+
+tasks.register<JavaExec>("legacyRouterFixtures") {
+    description = "Starts loopback legacy HTTPS fixtures for device smoke tests over adb reverse."
+    val debugTests = tasks.named<Test>("testDebugUnitTest")
+    dependsOn("compileDebugUnitTestKotlin")
+    classpath = debugTests.get().classpath
+    mainClass.set("com.alaa.legacyrouteropener.LegacyRouterFixtures")
 }

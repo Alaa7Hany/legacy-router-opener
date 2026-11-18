@@ -1,197 +1,144 @@
 package com.alaa.legacyrouteropener.presentation.screens
 
-import android.annotation.SuppressLint
+import android.content.ActivityNotFoundException
 import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
-import android.webkit.*
+import android.provider.Browser
+import android.webkit.WebChromeClient
+import android.webkit.WebResourceRequest
+import android.webkit.WebResourceResponse
+import android.webkit.WebView
+import android.webkit.WebViewClient
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
+import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.layout.*
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.viewinterop.AndroidView
-import com.alaa.legacyrouteropener.ui.theme.DarkBg
+import androidx.lifecycle.lifecycleScope
+import com.alaa.legacyrouteropener.BuildConfig
+import com.alaa.legacyrouteropener.LegacyRouterApplication
+import com.alaa.legacyrouteropener.presentation.components.BridgeIcons
 import com.alaa.legacyrouteropener.ui.theme.LegacyRouterOpenerTheme
+import com.alaa.legacyrouteropener.ui.theme.LocalBridgeColors
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
+import java.io.ByteArrayInputStream
 
 class WebViewActivity : ComponentActivity() {
-
     private var webView: WebView? = null
 
     @OptIn(ExperimentalMaterial3Api::class)
-    @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-
-        val targetUrl = intent.getStringExtra("URL") ?: "http://127.0.0.1:8080"
+        val app = application as LegacyRouterApplication
+        val url = intent.getStringExtra(URL)
+        if (url == null || url != app.controller.state.value.activeUrl) {
+            finish()
+            return
+        }
+        val origin = Uri.parse(url)
+        enableEdgeToEdge()
+        WebView.setWebContentsDebuggingEnabled(BuildConfig.DEBUG)
+        lifecycleScope.launch {
+            app.controller.state.first { it.activeUrl != url }
+            webView?.stopLoading()
+            webView?.clearHistory()
+            webView?.clearFormData()
+            finish()
+        }
 
         setContent {
-            LegacyRouterOpenerTheme {
+            val state by app.controller.state.collectAsState()
+            LegacyRouterOpenerTheme(state.language) {
+                val colors = LocalBridgeColors.current
+                var canGoBack by remember { mutableStateOf(false) }
                 var progress by remember { mutableIntStateOf(0) }
-                var pageTitle by remember { mutableStateOf("Router Dashboard") }
+                var noBrowser by remember { mutableStateOf(false) }
+                fun msg(key: String) = app.messages[state.language, key]
+                BackHandler(canGoBack) { webView?.goBack() }
 
                 Scaffold(
+                    containerColor = colors.background,
                     topBar = {
                         TopAppBar(
-                            title = {
-                                Text(
-                                    text = pageTitle,
-                                    fontWeight = FontWeight.Bold,
-                                    fontSize = 18.sp
-                                )
-                            },
+                            title = { Text(msg("router_page"), style = MaterialTheme.typography.titleMedium) },
                             navigationIcon = {
-                                IconButton(onClick = { finish() }) {
-                                    Icon(Icons.Default.ArrowBack, contentDescription = "Back", tint = Color.White)
+                                IconButton(onClick = { if (canGoBack) webView?.goBack() else finish() }) {
+                                    Icon(BridgeIcons.Back, msg("back_to_opener"))
                                 }
                             },
                             actions = {
                                 IconButton(onClick = { webView?.reload() }) {
-                                    Icon(Icons.Default.Refresh, contentDescription = "Reload", tint = Color.White)
+                                    Icon(BridgeIcons.Refresh, msg("reload"))
                                 }
                                 IconButton(onClick = {
-                                    val browserIntent = Intent(Intent.ACTION_VIEW, Uri.parse(targetUrl))
-                                    startActivity(browserIntent)
-                                }) {
-                                    Icon(Icons.Default.OpenInBrowser, contentDescription = "Open in Chrome", tint = Color.White)
-                                }
+                                    val current = webView?.url?.let(Uri::parse)?.takeIf { isOrigin(it, origin) } ?: origin
+                                    try {
+                                        startActivity(Intent(Intent.ACTION_VIEW, current)
+                                            .putExtra(Browser.EXTRA_CREATE_NEW_TAB, true))
+                                    } catch (_: ActivityNotFoundException) {
+                                        noBrowser = true
+                                    }
+                                }) { Icon(BridgeIcons.Open, msg("open_external")) }
                             },
-                            colors = TopAppBarDefaults.topAppBarColors(
-                                containerColor = DarkBg,
-                                titleContentColor = Color.White
-                            )
+                            colors = TopAppBarDefaults.topAppBarColors(containerColor = colors.card)
                         )
                     }
-                ) { padding ->
-                    Column(
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .padding(padding)
-                    ) {
-                        if (progress in 1..99) {
-                            LinearProgressIndicator(
-                                progress = { progress / 100f },
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .height(3.dp),
-                                color = MaterialTheme.colorScheme.primary
-                            )
+                ) { insets ->
+                    Column(Modifier.fillMaxSize().padding(insets).consumeWindowInsets(insets)) {
+                        if (progress < 100) {
+                            LinearProgressIndicator(progress = { progress / 100f }, modifier = Modifier.fillMaxWidth())
                         }
-
+                        if (noBrowser) Text(msg("browser_unavailable"), color = colors.error)
+                        val background = colors.card.toArgb()
                         AndroidView(
-                            factory = { ctx ->
-                                WebView(ctx).apply {
-                                    webView = this
-                                    setBackgroundColor(android.graphics.Color.WHITE)
-                                    WebView.setWebContentsDebuggingEnabled(true)
-
-                                    val cookieManager = CookieManager.getInstance()
-                                    cookieManager.setAcceptCookie(true)
-                                    cookieManager.setAcceptThirdPartyCookies(this, true)
-
+                            modifier = Modifier.fillMaxWidth().weight(1f),
+                            factory = { context ->
+                                WebView(context).apply {
+                                    setBackgroundColor(background)
+                                    @Suppress("SetJavaScriptEnabled")
                                     settings.javaScriptEnabled = true
                                     settings.domStorageEnabled = true
-                                    settings.databaseEnabled = true
-                                    settings.allowContentAccess = true
-                                    settings.allowFileAccess = true
-                                    settings.allowFileAccessFromFileURLs = true
-                                    settings.allowUniversalAccessFromFileURLs = true
-                                    settings.loadWithOverviewMode = true
-                                    settings.useWideViewPort = true
-                                    settings.setSupportZoom(true)
-                                    settings.builtInZoomControls = true
-                                    settings.displayZoomControls = false
-                                    settings.javaScriptCanOpenWindowsAutomatically = true
+                                    settings.allowFileAccess = false
+                                    settings.allowContentAccess = false
+                                    settings.mixedContentMode = android.webkit.WebSettings.MIXED_CONTENT_NEVER_ALLOW
                                     settings.setSupportMultipleWindows(false)
-                                    settings.mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
-                                    settings.layoutAlgorithm = WebSettings.LayoutAlgorithm.NORMAL
-                                    settings.defaultTextEncodingName = "utf-8"
-                                    settings.userAgentString = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-
+                                    android.webkit.CookieManager.getInstance().setAcceptThirdPartyCookies(this, false)
                                     webChromeClient = object : WebChromeClient() {
-                                        override fun onProgressChanged(view: WebView?, newProgress: Int) {
+                                        override fun onProgressChanged(view: WebView, newProgress: Int) {
                                             progress = newProgress
                                         }
-
-                                        override fun onReceivedTitle(view: WebView?, title: String?) {
-                                            if (!title.isNullOrBlank()) {
-                                                pageTitle = title
-                                            }
-                                        }
-
-                                        override fun onConsoleMessage(consoleMessage: ConsoleMessage?): Boolean {
-                                            val msg = "[${consoleMessage?.messageLevel()}] ${consoleMessage?.message()} (${consoleMessage?.sourceId()}:${consoleMessage?.lineNumber()})"
-                                            android.util.Log.d("WebViewConsole", msg)
-                                            android.util.Log.d("DirectRouterHttp", "🌐 [JS Console] $msg")
-                                            return super.onConsoleMessage(consoleMessage)
-                                        }
-
-                                        override fun onJsAlert(view: WebView?, url: String?, message: String?, result: JsResult?): Boolean {
-                                            android.util.Log.d("WebViewAlert", "JS Alert: $message")
-                                            android.util.Log.d("DirectRouterHttp", "🚨 JS Alert: $message")
-                                            return super.onJsAlert(view, url, message, result)
-                                        }
-
-                                        override fun onJsConfirm(view: WebView?, url: String?, message: String?, result: JsResult?): Boolean {
-                                            android.util.Log.d("WebViewConfirm", "JS Confirm: $message")
-                                            return super.onJsConfirm(view, url, message, result)
-                                        }
                                     }
-
                                     webViewClient = object : WebViewClient() {
-                                        override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean {
-                                            val url = request?.url?.toString()
-                                            android.util.Log.d("WebViewClient", "shouldOverrideUrlLoading: $url")
-                                            android.util.Log.d("DirectRouterHttp", "🔄 WebView Navigating: $url")
-                                            return false
+                                        override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest) =
+                                            !isOrigin(request.url, origin)
+
+                                        override fun shouldInterceptRequest(view: WebView, request: WebResourceRequest): WebResourceResponse? {
+                                            if (isOrigin(request.url, origin) || request.url.scheme in setOf("data", "blob")) return null
+                                            return WebResourceResponse("text/plain", "utf-8", 403, "Forbidden", emptyMap(),
+                                                ByteArrayInputStream(ByteArray(0)))
                                         }
 
-                                        override fun onPageStarted(view: WebView?, url: String?, favicon: android.graphics.Bitmap?) {
-                                            super.onPageStarted(view, url, favicon)
-                                            android.util.Log.d("WebViewClient", "onPageStarted: $url")
-                                            android.util.Log.d("DirectRouterHttp", "🏁 Page Started: $url")
-                                        }
-
-                                        override fun onPageFinished(view: WebView?, url: String?) {
-                                            super.onPageFinished(view, url)
-                                            android.util.Log.d("WebViewClient", "onPageFinished: $url")
-                                            android.util.Log.d("DirectRouterHttp", "✅ Page Finished: $url")
-                                        }
-
-                                        override fun onReceivedError(
-                                            view: WebView?,
-                                            request: WebResourceRequest?,
-                                            error: WebResourceError?
-                                        ) {
-                                            super.onReceivedError(view, request, error)
-                                            val errStr = "onReceivedError: ${request?.url} -> ${error?.description} (${error?.errorCode})"
-                                            android.util.Log.e("WebViewClient", errStr)
-                                            android.util.Log.e("DirectRouterHttp", "❌ WebView Error: $errStr")
-                                        }
-
-                                        override fun onReceivedHttpError(
-                                            view: WebView?,
-                                            request: WebResourceRequest?,
-                                            errorResponse: WebResourceResponse?
-                                        ) {
-                                            super.onReceivedHttpError(view, request, errorResponse)
-                                            val errStr = "onReceivedHttpError: ${request?.url} -> ${errorResponse?.statusCode} ${errorResponse?.reasonPhrase}"
-                                            android.util.Log.e("WebViewClient", errStr)
-                                            android.util.Log.e("DirectRouterHttp", "❌ WebView HTTP Error: $errStr")
+                                        override fun doUpdateVisitedHistory(view: WebView, url: String?, isReload: Boolean) {
+                                            canGoBack = view.canGoBack()
                                         }
                                     }
-
-                                    loadUrl(targetUrl)
+                                    webView = this
+                                    loadUrl(url)
                                 }
                             },
-                            modifier = Modifier.fillMaxSize()
+                            update = { it.setBackgroundColor(background) },
+                            onRelease = { view ->
+                                view.stopLoading()
+                                view.destroy()
+                                if (webView === view) webView = null
+                            }
                         )
                     }
                 }
@@ -199,16 +146,10 @@ class WebViewActivity : ComponentActivity() {
         }
     }
 
-    override fun onBackPressed() {
-        if (webView?.canGoBack() == true) {
-            webView?.goBack()
-        } else {
-            super.onBackPressed()
-        }
-    }
+    private fun isOrigin(uri: Uri, origin: Uri) =
+        uri.scheme == origin.scheme && uri.host == origin.host && uri.port == origin.port
 
-    override fun onDestroy() {
-        webView?.destroy()
-        super.onDestroy()
+    companion object {
+        const val URL = "URL"
     }
 }

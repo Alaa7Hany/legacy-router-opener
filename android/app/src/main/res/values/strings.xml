@@ -1,5 +1,3 @@
 <resources>
-    <string name="app_name">Legacy Router Opener</string>
-    <string name="default_router_ip">192.168.1.1</string>
-    <string name="default_proxy_port">8080</string>
+    <string name="app_name">Router Page Opener</string>
 </resources>
