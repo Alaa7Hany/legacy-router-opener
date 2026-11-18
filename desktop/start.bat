@@ -19,7 +19,7 @@ if %errorlevel% equ 0 (
 where node >nul 2>nul
 if %errorlevel% equ 0 (
     echo Starting fallback Node.js proxy...
-    node --openssl-legacy-provider index.mjs %*
+    node --openssl-legacy-provider "legacy\index.mjs" %*
     if %errorlevel% neq 0 pause
     exit /b %errorlevel%
 )

@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>Router Page Opener</title>
+  <link rel="stylesheet" href="/_bridge/assets/bridge.css">
+</head>
+<body>
+  <main class="card">
+    <header class="header">
+      <h1>Router Page Opener</h1>
+      <p id="target-subtitle" class="subtitle">Ready to open <strong>{{.Target}}</strong></p>
+    </header>
+
+    <form id="config-form" novalidate>
+      <button id="open-btn" type="submit" class="primary-btn">Open Router Page ({{.Target}}) ↗</button>
+
+      <div class="helper-row">
+        <span>Page stuck or says already logged in?</span>
+        <button id="reset-btn" type="button" class="link-btn">Reset session</button>
+      </div>
+
+      <div id="action-banner" class="status-banner" role="status" aria-live="polite" hidden></div>
+
+      <div class="disclosures">
+        <details id="options-panel">
+          <summary>Change IP or device type</summary>
+          <div class="panel-body">
+            <div class="field">
+              <div class="label-row">
+                <label for="target-ip">Router or device address</label>
+                <button id="detect-btn" type="button" class="link-btn">Use detected (<span id="detected-gateway">{{.Gateway}}</span>)</button>
+              </div>
+              <input
+                id="target-ip"
+                name="target"
+                type="text"
+                value="{{.Target}}"
+                placeholder="192.168.1.1"
+                required
+                autocorrect="off"
+                autocapitalize="none"
+                spellcheck="false"
+                enterkeyhint="go"
+                aria-describedby="target-hint target-error"
+              >
+              <p id="target-hint" class="hint">Add :port or http:// if needed (e.g. 192.168.0.1 or 10.0.0.5:8443).</p>
+              <p id="target-error" class="error-text" hidden></p>
+            </div>
+
+            <div class="field">
+              <label for="preset-select">Device compatibility profile</label>
+              <select id="preset-select" name="preset" aria-describedby="preset-hint"></select>
+              <p id="preset-hint" class="hint">Balanced defaults for home routers and older hardware.</p>
+            </div>
+
+            <button id="save-btn" type="button" class="secondary-btn">Apply changes</button>
+          </div>
+        </details>
+
+        <details id="logs-panel">
+          <summary>Connection logs</summary>
+          <div class="panel-body">
+            <div class="logs-meta">
+              <span id="tls-summary" class="tls-line">No connections yet</span>
+              <button id="clear-logs-btn" type="button" class="link-btn">Clear</button>
+            </div>
+            <div id="log-box" class="log-box" role="log" aria-label="Connection activity log">
+              <div class="log-empty">No connection activity yet.</div>
+            </div>
+          </div>
+        </details>
+      </div>
+    </form>
+    {{if .QuitURL}}
+    <footer class="app-footer"><a class="link-btn" href="{{.QuitURL}}">Quit app</a></footer>
+    {{end}}
+  </main>
+
+  <script id="initial-state" type="application/json">{{.State}}</script>
+  <script src="/_bridge/assets/bridge.js" defer></script>
+</body>
+</html>

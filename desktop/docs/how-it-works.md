@@ -2,7 +2,7 @@
 
 Modern web browsers (Chrome, Edge, Firefox, Safari) have tightened their security rules over the years. While that protects public websites, it completely blocks access to older routers, switches, printers, and server controllers that no longer receive firmware updates.
 
-This app runs a small local bridge on your own computer (`http://localhost:8080`) that translates between your modern browser and your older device on the local network.
+This app runs a small local bridge on your own computer, usually at `http://localhost:8080`. It translates between your modern browser and your older device on the local network.
 
 ---
 
@@ -34,5 +34,5 @@ This app runs a small local bridge on your own computer (`http://localhost:8080`
 
 **No.**
 - It does not weaken or change any settings in Chrome, Edge, or Firefox.
-- It only handles traffic to the single router or device you open through `http://localhost:8080`. Normal internet browsing never passes through this app.
+- It only handles traffic to the router or device you open through the local bridge. Normal internet browsing never passes through this app.
 - Nothing is sent to external servers; everything stays strictly between your computer and your local network device.

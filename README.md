@@ -3,7 +3,7 @@
 > **A local TLS-bypass reverse proxy & mobile app for archaic TE Data, Huawei (HG531 V1 / HG532n), and ZTE (ZXHN) router administration dashboards.**
 
 Available as:
-* 💻 **Desktop App** ([`desktop/`](desktop/)) — Standalone ~7.6 MB Go binary (zero dependencies) + minimalist `/_bridge` opener page
+* 💻 **Desktop App** ([`desktop/`](desktop/)) — Portable Windows executable with a browser-based opener
 * 📱 **Android App** ([`android/`](android/)) — Standalone Jetpack Compose + Embedded Proxy & In-App WebView
 
 ---
@@ -58,23 +58,23 @@ The Android app provides a 100% mobile, standalone solution. It runs an embedded
 ## 💻 Desktop Quick Start (`desktop/`)
 
 ### Option A: Standalone Executable (Zero Dependencies — Recommended)
-1. Download `legacy-router-opener.exe` (or double-click `desktop/start.bat`). **No Node.js, Python, or Go installation required.**
-2. Your browser opens the opener card at **`http://localhost:8080/_bridge`**.
-3. Click **Open Router Page (`192.168.1.1`)** to launch your router dashboard at `http://localhost:8080/`.
+1. Download `legacy-router-opener.exe` from [GitHub Releases](https://github.com/Alaa7Hany/legacy-router-page-opener/releases) and double-click it. **No installation required.**
+2. Your browser opens the opener card, usually at **`http://localhost:8080/_bridge`**.
+3. Click **Open Router Page** to launch your router dashboard in a new tab.
 4. Expand **Change IP or device type** to switch targets/profiles, or click **Reset session** if a router login gets stuck.
+5. Click **Quit app** in the opener and confirm when you’re done. Closing the browser tab leaves the app running. Double-click the executable to reopen the opener.
 
 See [Desktop Documentation](desktop/docs/README.md) for plain-English guides on how it works, design decisions, and troubleshooting.
 
 ### Option B: Build / Run From Source (Developers)
-- **Go 1.24+:**
-  ```bash
+- **Go 1.27+ on Windows:**
+  ```powershell
   cd desktop
   go test -count=1 -v ./...
-  go build -ldflags="-s -w" -o legacy-router-opener.exe .
-  ./legacy-router-opener.exe
+  go build -ldflags="-s -w -H windowsgui" -o legacy-router-opener.exe .
   ```
 - **CLI Flags:** `-target 192.168.1.1:443`, `-preset huawei-zte`, `-port 8080`, `-open-router`, `-no-browser`
-- **Legacy Node.js fallback script:** `node --openssl-legacy-provider desktop/index.mjs` is preserved in `desktop/`.
+- **Developer console:** Run `go run .` from `desktop/` for terminal logs. The Windows developer launcher is `desktop/start.bat`. To run the Node.js fallback from the repository root, use `node --openssl-legacy-provider desktop/legacy/index.mjs`.
 
 ---
 

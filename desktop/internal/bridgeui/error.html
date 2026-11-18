@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>Could Not Reach Device — Router Page Opener</title>
+  <link rel="stylesheet" href="/_bridge/assets/error.css">
+</head>
+<body>
+  <main>
+    <h1>Could Not Reach Device</h1>
+    <p>No response from <strong>{{.Target}}</strong></p>
+    <pre>{{.Message}}</pre>
+    <form id="switch-form">
+      <label for="new-target">Try another address or port:</label>
+      <div class="row">
+        <input id="new-target" name="target" type="text" value="{{.Target}}" required autocorrect="off" autocapitalize="none" spellcheck="false">
+        <button type="submit" class="primary">Switch &amp; Retry</button>
+      </div>
+    </form>
+    <div class="row">
+      <button id="retry-btn" type="button" class="secondary">Retry</button>
+      <a href="/_bridge" class="btn secondary">Back to Opener</a>
+    </div>
+  </main>
+  <script src="/_bridge/assets/error.js" defer></script>
+</body>
+</html>

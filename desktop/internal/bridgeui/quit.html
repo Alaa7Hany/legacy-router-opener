@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{if .Token}}Quit Router Page Opener{{else}}Router Page Opener stopped{{end}}</title>
+  <style>{{.CSS}}</style>
+</head>
+<body>
+  <main class="card">
+    {{if .Token}}
+    <header class="header">
+      <h1>Quit Router Page Opener?</h1>
+      <p class="subtitle">Any router pages opened through the app will disconnect.</p>
+    </header>
+    <form method="post" action="/quit">
+      <input type="hidden" name="token" value="{{.Token}}">
+      <button class="primary-btn" type="submit">Quit app</button>
+    </form>
+    <footer class="app-footer"><a class="link-btn" href="{{.OpenerURL}}">Cancel</a></footer>
+    {{else}}
+    <h1>Router Page Opener stopped</h1>
+    <p class="subtitle">Open the app again to reconnect to your router.</p>
+    {{end}}
+  </main>
+</body>
+</html>

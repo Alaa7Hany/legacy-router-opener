@@ -7,6 +7,8 @@ import (
 	"path"
 	"regexp"
 	"strings"
+
+	"github.com/alaa/legacyrouteropener/internal/upstream"
 )
 
 var (
@@ -137,7 +139,7 @@ func RewriteResponseBody(body string, routerEndpoint string, proxyPort int, prox
 		proxyHost = "localhost"
 	}
 
-	targetHost := ParseEndpoint(routerEndpoint).Host
+	targetHost := upstream.ParseEndpoint(routerEndpoint).Host
 	escapedHost := regexp.QuoteMeta(targetHost)
 	proxyAuthority := fmt.Sprintf("%s:%d", proxyHost, proxyPort)
 
@@ -174,7 +176,7 @@ func RewriteRedirectLocation(location string, routerEndpoint string, proxyPort i
 		proxyHost = "localhost"
 	}
 
-	targetHost := ParseEndpoint(routerEndpoint).Host
+	targetHost := upstream.ParseEndpoint(routerEndpoint).Host
 	escapedHost := regexp.QuoteMeta(targetHost)
 	proxyBase := fmt.Sprintf("http://%s:%d", proxyHost, proxyPort)
 

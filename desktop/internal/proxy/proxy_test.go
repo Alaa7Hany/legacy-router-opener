@@ -3,7 +3,6 @@ package proxy
 import (
 	"bufio"
 	"bytes"
-	"compress/gzip"
 	"context"
 	"crypto/rand"
 	"crypto/rsa"
@@ -21,158 +20,9 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/alaa/legacyrouteropener/internal/upstream"
 )
-
-func TestParseEndpoint(t *testing.T) {
-	tests := []struct {
-		name     string
-		input    string
-		wantHost string
-		wantPort int
-		wantTLS  bool
-		wantExp  bool
-		wantAuth string
-		wantDial string
-	}{
-		{
-			name:     "empty defaults to 192.168.1.1:443",
-			input:    "",
-			wantHost: "192.168.1.1",
-			wantPort: 443,
-			wantTLS:  true,
-			wantExp:  false,
-			wantAuth: "192.168.1.1",
-			wantDial: "192.168.1.1:443",
-		},
-		{
-			name:     "bare IPv4 defaults to HTTPS 443 implicit",
-			input:    "192.168.1.1",
-			wantHost: "192.168.1.1",
-			wantPort: 443,
-			wantTLS:  true,
-			wantExp:  false,
-			wantAuth: "192.168.1.1",
-			wantDial: "192.168.1.1:443",
-		},
-		{
-			name:     "explicit http scheme defaults to port 80",
-			input:    "http://192.168.1.1",
-			wantHost: "192.168.1.1",
-			wantPort: 80,
-			wantTLS:  false,
-			wantExp:  true,
-			wantAuth: "192.168.1.1",
-			wantDial: "192.168.1.1:80",
-		},
-		{
-			name:     "explicit https scheme on port 80 preserves TLS",
-			input:    "https://192.168.1.1:80/login",
-			wantHost: "192.168.1.1",
-			wantPort: 80,
-			wantTLS:  true,
-			wantExp:  true,
-			wantAuth: "192.168.1.1:80",
-			wantDial: "192.168.1.1:80",
-		},
-		{
-			name:     "custom port 8443 assumes TLS",
-			input:    "192.168.0.120:8443/index.html",
-			wantHost: "192.168.0.120",
-			wantPort: 8443,
-			wantTLS:  true,
-			wantExp:  true,
-			wantAuth: "192.168.0.120:8443",
-			wantDial: "192.168.0.120:8443",
-		},
-		{
-			name:     "port 80 without scheme disables TLS",
-			input:    "10.0.0.1:80",
-			wantHost: "10.0.0.1",
-			wantPort: 80,
-			wantTLS:  false,
-			wantExp:  true,
-			wantAuth: "10.0.0.1",
-			wantDial: "10.0.0.1:80",
-		},
-		{
-			name:     "bracketed IPv6 with custom port",
-			input:    "[fe80::1]:8443",
-			wantHost: "[fe80::1]",
-			wantPort: 8443,
-			wantTLS:  true,
-			wantExp:  true,
-			wantAuth: "[fe80::1]:8443",
-			wantDial: "[fe80::1]:8443",
-		},
-		{
-			name:     "bare IPv6 address wraps in brackets",
-			input:    "::1",
-			wantHost: "[::1]",
-			wantPort: 443,
-			wantTLS:  true,
-			wantExp:  false,
-			wantAuth: "[::1]",
-			wantDial: "[::1]:443",
-		},
-	}
-
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			ep := ParseEndpoint(tc.input)
-			if ep.Host != tc.wantHost || ep.Port != tc.wantPort || ep.UseTLS != tc.wantTLS || ep.ExplicitPortOrScheme != tc.wantExp {
-				t.Fatalf("ParseEndpoint(%q) = %+v, want host=%q port=%d tls=%v exp=%v",
-					tc.input, ep, tc.wantHost, tc.wantPort, tc.wantTLS, tc.wantExp)
-			}
-			if ep.Authority() != tc.wantAuth {
-				t.Fatalf("Authority() = %q, want %q", ep.Authority(), tc.wantAuth)
-			}
-			if ep.DialAddress() != tc.wantDial {
-				t.Fatalf("DialAddress() = %q, want %q", ep.DialAddress(), tc.wantDial)
-			}
-		})
-	}
-}
-
-func TestGatewayParsers(t *testing.T) {
-	winRoute := `
-IPv4 Route Table
-===========================================================================
-Active Routes:
-Network Destination        Netmask          Gateway       Interface  Metric
-          0.0.0.0          0.0.0.0         On-link       10.10.0.2     45
-          0.0.0.0          0.0.0.0      192.168.8.1    192.168.8.2     35
-          0.0.0.0          0.0.0.0      192.168.1.1    192.168.1.5     25
-===========================================================================`
-	if got := ParseWindowsRoutePrint(winRoute); got != "192.168.1.1" {
-		t.Fatalf("ParseWindowsRoutePrint = %q, want 192.168.1.1", got)
-	}
-
-	winIPConfig := `
-Ethernet adapter Ethernet:
-   IPv4 Address. . . . . . . . . . . : 192.168.8.101
-   Default Gateway . . . . . . . . . :
-Wireless LAN adapter Wi-Fi:
-   Default Gateway . . . . . . . . . : 192.168.100.1`
-	if got := ParseWindowsIPConfig(winIPConfig); got != "192.168.100.1" {
-		t.Fatalf("ParseWindowsIPConfig = %q, want 192.168.100.1", got)
-	}
-
-	procRoute := "Iface\tDestination\tGateway\tFlags\tRefCnt\tUse\tMetric\tMask\tMTU\tWindow\tIRTT\n" +
-		"eth0\t00000000\t0101A8C0\t0003\t0\t0\t100\t00000000\t0\t0\t0\n" +
-		"wlan0\t00000000\tFE01A8C0\t0003\t0\t0\t600\t00000000\t0\t0\t0\n"
-	if got := ParseProcNetRoute(procRoute); got != "192.168.1.1" {
-		t.Fatalf("ParseProcNetRoute = %q, want 192.168.1.1", got)
-	}
-
-	if got := ParseLinuxIPRoute("default via 10.20.30.1 dev wlan0 proto dhcp metric 600"); got != "10.20.30.1" {
-		t.Fatalf("ParseLinuxIPRoute = %q, want 10.20.30.1", got)
-	}
-
-	macRoute := "   route to: default\n destination: default\n     gateway: 172.16.0.1\n"
-	if got := ParseMacRouteGet(macRoute); got != "172.16.0.1" {
-		t.Fatalf("ParseMacRouteGet = %q, want 172.16.0.1", got)
-	}
-}
 
 func TestSessionCookieJarAndSanitization(t *testing.T) {
 	jar := NewSessionCookieJar(true)
@@ -281,53 +131,6 @@ func TestTransformerRewritingAndBinarySafety(t *testing.T) {
 	if resMime := GetAccurateMimeType("/lang/footer.res", emptyHdr, []byte("var x=1;")); resMime != "application/javascript; charset=utf-8" {
 		t.Fatalf("expected .res MIME application/javascript, got %q", resMime)
 	}
-}
-
-func TestLenientRawHTTPParser(t *testing.T) {
-	t.Run("HTTP/1.0 without status text or Content-Length", func(t *testing.T) {
-		raw := "HTTP/1.0 200\r\nSet-Cookie: A=1\r\nSet-Cookie: B=2\r\n\r\n<html>ok</html>"
-		resp, err := parseRawHTTPResponse(bufio.NewReader(strings.NewReader(raw)), http.MethodGet)
-		if err != nil {
-			t.Fatalf("parseRawHTTPResponse failed: %v", err)
-		}
-		if resp.StatusCode != 200 {
-			t.Fatalf("StatusCode = %d, want 200", resp.StatusCode)
-		}
-		if len(resp.Headers.Values("Set-Cookie")) != 2 {
-			t.Fatalf("expected 2 Set-Cookie headers, got %v", resp.Headers.Values("Set-Cookie"))
-		}
-		if string(resp.Body) != "<html>ok</html>" {
-			t.Fatalf("Body = %q", string(resp.Body))
-		}
-	})
-
-	t.Run("chunked transfer encoding with extensions", func(t *testing.T) {
-		raw := "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5;ext=1\r\nhello\r\n6\r\n world\r\n0\r\n\r\n"
-		resp, err := parseRawHTTPResponse(bufio.NewReader(strings.NewReader(raw)), http.MethodGet)
-		if err != nil {
-			t.Fatalf("parseRawHTTPResponse failed: %v", err)
-		}
-		if string(resp.Body) != "hello world" {
-			t.Fatalf("chunked Body = %q, want %q", string(resp.Body), "hello world")
-		}
-	})
-
-	t.Run("gzip encoded response body", func(t *testing.T) {
-		var gz bytes.Buffer
-		w := gzip.NewWriter(&gz)
-		_, _ = w.Write([]byte("compressed-router-html"))
-		_ = w.Close()
-
-		raw := fmt.Sprintf("HTTP/1.1 200 OK\r\nContent-Encoding: gzip\r\nContent-Length: %d\r\n\r\n", gz.Len())
-		full := append([]byte(raw), gz.Bytes()...)
-		resp, err := parseRawHTTPResponse(bufio.NewReader(bytes.NewReader(full)), http.MethodGet)
-		if err != nil {
-			t.Fatalf("parseRawHTTPResponse failed: %v", err)
-		}
-		if string(resp.Body) != "compressed-router-html" {
-			t.Fatalf("gzip Body = %q", string(resp.Body))
-		}
-	})
 }
 
 func TestEndToEndLegacyTLS10AndStaticCaching(t *testing.T) {
@@ -543,12 +346,12 @@ func TestAbruptTLSCloseWithoutCloseNotify(t *testing.T) {
 		}
 	}()
 
-	client := NewClient(4, nil)
+	client := upstream.NewClient(4, nil)
 	resp, _, err := client.SendRequest(
 		context.Background(),
 		"https://"+ln.Addr().String(),
-		FindPreset("auto"),
-		UpstreamRequest{Method: http.MethodGet, Path: "/"},
+		upstream.FindPreset("auto"),
+		upstream.UpstreamRequest{Method: http.MethodGet, Path: "/"},
 		"",
 	)
 	if err != nil {

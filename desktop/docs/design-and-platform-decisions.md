@@ -4,11 +4,11 @@ Key product and engineering choices made for the Desktop version, and why they e
 
 ---
 
-## 1. Standalone Go Executable (~7.6 MB) Instead of Bundled Node.js (~80 MB)
+## 1. Portable Windows Executable
 
-- **Original approach:** The first desktop version was a Node.js script (`index.mjs`), which required users to install Node.js v18+ first or download an ~80 MB bundled runtime.
+- **Original approach:** The first desktop version was a Node.js script, now kept at [`desktop/legacy/index.mjs`](../legacy/index.mjs). It required users to install Node.js v18+ first or download an ~80 MB bundled runtime.
 - **Problem:** When a router is reset or misconfigured, the user often has **no internet connection** to download Node.js, and everyday users do not want to install developer runtimes just to log into their Wi-Fi router.
-- **Decision:** We rebuilt the desktop proxy in Go with zero third-party packages. It compiles into a single ~7.6 MB file (`legacy-router-opener.exe`) that runs immediately offline with nothing to install. *(The lightweight `index.mjs` script remains in the `desktop/` folder as a developer fallback.)*
+- **Decision:** The Go app bundles the browser UI into a single executable that can run offline. Double-clicking it opens the browser without a terminal. If startup fails, the Windows build shows an error dialog. Developers can use `go run .` for terminal logs or run the Node.js fallback.
 
 ---
 
@@ -29,7 +29,7 @@ Key product and engineering choices made for the Desktop version, and why they e
 
 - **Why not put the opener controls at `/` and proxy the router under `/router/`?**
   Older routers, switches, and server controllers hardcode root-relative links like `/index/login.cgi`, `/js/util.js`, and `/images/logo.gif`, and rely heavily on `<frameset>` layouts. Moving the device off `/` breaks scripts and images across dozens of hardware models.
-- **Decision:** The proxied device owns `/` exclusively, while the opener controls live safely at `/_bridge` (which no router or embedded device uses).
+- **Decision:** The proxied device is served at `/` and the opener lives at `/_bridge`. **Quit app** opens a confirmation on a separate local browser origin so scripts from the proxied device cannot shut down the app.
 
 ---
 

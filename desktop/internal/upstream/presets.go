@@ -1,4 +1,4 @@
-package proxy
+package upstream
 
 // HardwarePreset defines device-specific tuning options for consumer routers and enterprise OOB controllers.
 type HardwarePreset struct {

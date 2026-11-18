@@ -1,4 +1,4 @@
-package proxy
+package gateway
 
 import (
 	"context"
@@ -26,12 +26,12 @@ func DetectDefaultGateway() string {
 
 	switch runtime.GOOS {
 	case "windows":
-		if out, err := exec.CommandContext(ctx, "route", "print", "0.0.0.0").Output(); err == nil {
+		if out, err := gatewayCommand(ctx, "route", "print", "0.0.0.0").Output(); err == nil {
 			if gw := ParseWindowsRoutePrint(string(out)); gw != "" {
 				return gw
 			}
 		}
-		if out, err := exec.CommandContext(ctx, "ipconfig").Output(); err == nil {
+		if out, err := gatewayCommand(ctx, "ipconfig").Output(); err == nil {
 			if gw := ParseWindowsIPConfig(string(out)); gw != "" {
 				return gw
 			}

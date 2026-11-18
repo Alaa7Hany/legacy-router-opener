@@ -6,26 +6,31 @@ package main
 
 import (
 	"context"
-	"errors"
 	"flag"
-	"fmt"
-	"net"
-	"net/http"
 	"os"
-	"os/exec"
 	"os/signal"
-	"runtime"
 	"strconv"
 	"strings"
 	"syscall"
-	"time"
-
-	"github.com/alaa/legacyrouteropener/internal/proxy"
 )
 
-const maxPortAttempts = 10
+type launchOptions struct {
+	port                  int
+	target, preset        string
+	noBrowser, openRouter bool
+}
 
 func main() {
+	options := parseLaunchOptions()
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer cancel()
+	if err := run(ctx, options); err != nil {
+		reportLaunchError(err)
+		os.Exit(1)
+	}
+}
+
+func parseLaunchOptions() launchOptions {
 	defaultPort := 8080
 	if envPort := strings.TrimSpace(os.Getenv("PROXY_PORT")); envPort != "" {
 		if p, err := strconv.Atoi(envPort); err == nil && p >= 1 && p <= 65535 {
@@ -45,139 +50,8 @@ func main() {
 		initialTarget = strings.TrimSpace(flag.Arg(0))
 	}
 
-	detectedGateway := proxy.DetectDefaultGateway()
-	if initialTarget == "" {
-		initialTarget = detectedGateway
+	return launchOptions{
+		port: *portFlag, target: initialTarget, preset: *presetFlag,
+		noBrowser: *noBrowserFlag, openRouter: *openRouterFlag,
 	}
-
-	srv := proxy.NewServer(proxy.Options{
-		ProxyPort:       *portFlag,
-		InitialTarget:   initialTarget,
-		InitialPresetID: *presetFlag,
-		DetectedGateway: detectedGateway,
-		OnStdoutLog: func(line string) {
-			fmt.Println(line)
-		},
-	})
-
-	listeners, boundPort, alreadyRunning, err := listenWithFallback(*portFlag)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "[ERR] Startup failed: %v\n", err)
-		os.Exit(1)
-	}
-
-	launchPath := "/_bridge"
-	if *openRouterFlag {
-		launchPath = "/"
-	}
-	launchURL := fmt.Sprintf("http://localhost:%d%s", boundPort, launchPath)
-
-	if alreadyRunning {
-		fmt.Println("\n------------------------------------------------------")
-		fmt.Printf("[INFO] Port %d is already serving Router Page Opener.\n", boundPort)
-		fmt.Printf("Opener Page:  http://localhost:%d/_bridge\n", boundPort)
-		fmt.Printf("Router Page:  http://localhost:%d/\n", boundPort)
-		fmt.Println("[INFO] Reusing existing instance to avoid session conflicts.")
-		fmt.Println("------------------------------------------------------")
-		if !*noBrowserFlag {
-			_ = openBrowser(launchURL)
-		}
-		return
-	}
-
-	srv.SetProxyPort(boundPort)
-
-	httpServer := &http.Server{
-		Handler:           srv,
-		ReadHeaderTimeout: 30 * time.Second,
-	}
-
-	snap := srv.Snapshot()
-	fmt.Println("\n------------------------------------------------------")
-	fmt.Println("Router Page Opener (Standalone Desktop Bridge)")
-	fmt.Printf("Gateway:      %s\n", detectedGateway)
-	fmt.Printf("Target:       %s (%s)\n", snap.ResolvedTarget, proxy.FindPreset(snap.Preset).Name)
-	fmt.Printf("Opener Page:  http://localhost:%d/_bridge\n", boundPort)
-	fmt.Printf("Router Page:  http://localhost:%d/\n", boundPort)
-	fmt.Println("------------------------------------------------------")
-	fmt.Println("Press Ctrl+C to stop.")
-
-	errCh := make(chan error, len(listeners))
-	for _, ln := range listeners {
-		l := ln
-		go func() {
-			if serveErr := httpServer.Serve(l); serveErr != nil && !errors.Is(serveErr, http.ErrServerClosed) {
-				errCh <- serveErr
-			}
-		}()
-	}
-
-	if !*noBrowserFlag {
-		go func() {
-			time.Sleep(150 * time.Millisecond)
-			_ = openBrowser(launchURL)
-		}()
-	}
-
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
-
-	select {
-	case sig := <-sigCh:
-		fmt.Printf("\n[STOP] Received %s, shutting down...\n", sig)
-		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-		_ = httpServer.Shutdown(ctx)
-		cancel()
-	case serveErr := <-errCh:
-		fmt.Fprintf(os.Stderr, "[ERR] Server error: %v\n", serveErr)
-		os.Exit(1)
-	}
-}
-
-func listenWithFallback(startPort int) ([]net.Listener, int, bool, error) {
-	if startPort <= 0 || startPort > 65535 {
-		startPort = 8080
-	}
-
-	for offset := 0; offset < maxPortAttempts; offset++ {
-		candidate := startPort + offset
-		if candidate > 65535 {
-			break
-		}
-
-		ln4, err := net.Listen("tcp4", fmt.Sprintf("127.0.0.1:%d", candidate))
-		if err == nil {
-			listeners := []net.Listener{ln4}
-			// Also bind IPv6 loopback on the same port when available so http://localhost works without delay.
-			if ln6, err6 := net.Listen("tcp6", fmt.Sprintf("[::1]:%d", candidate)); err6 == nil {
-				listeners = append(listeners, ln6)
-			}
-			return listeners, candidate, false, nil
-		}
-
-		if offset == 0 && proxy.IsExistingProxy(candidate) {
-			return nil, candidate, true, nil
-		}
-
-		if offset == 0 {
-			fmt.Printf("[WARN] Port %d is in use by another app; trying fallback port...\n", candidate)
-		} else {
-			fmt.Printf("[WARN] Port %d is also in use; trying next port...\n", candidate)
-		}
-	}
-
-	return nil, 0, false, fmt.Errorf("no available proxy port found in range %d-%d", startPort, startPort+maxPortAttempts-1)
-}
-
-func openBrowser(targetURL string) error {
-	var cmd *exec.Cmd
-	switch runtime.GOOS {
-	case "windows":
-		cmd = exec.Command("rundll32", "url.dll,FileProtocolHandler", targetURL)
-	case "darwin":
-		cmd = exec.Command("open", targetURL)
-	default:
-		cmd = exec.Command("xdg-open", targetURL)
-	}
-	return cmd.Start()
 }

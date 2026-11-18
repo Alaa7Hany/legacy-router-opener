@@ -9,7 +9,7 @@ Quick answers when a router or legacy device refuses to log in or load properly.
 Older Huawei/ZTE routers and HPE iLO controllers only allow **one active admin session** at a time, and some devices keep stale cookies stuck in your browser.
 
 **How to fix:**
-1. Go back to the **Router Page Opener** tab (`http://localhost:8080/_bridge`).
+1. Go back to the **Router Page Opener** tab. If you closed it, double-click `legacy-router-opener.exe` to reopen it.
 2. Click **Reset session** directly beneath the main button.
 3. This clears the bridge's cookie jar, tells your browser to drop stale `localhost` cookies, and flushes cached pages.
 4. Click **Open Router Page** again.
@@ -48,9 +48,11 @@ Expand **Change IP or device type** to choose a profile if a specific piece of h
 
 ---
 
-## "Port 8080 is already serving Router Page Opener"
+## Reopening or Quitting the App
 
-If you already have an instance running on port `8080`, opening the app a second time reuses the running instance instead of launching a duplicate server (which would cause session conflicts on your router).
+Closing the browser tab leaves the bridge running. Double-click `legacy-router-opener.exe` to reopen the existing instance, even if it started on a different port because `8080` was busy.
+
+To stop the bridge and disconnect any router tabs opened through it, click **Quit app** in the opener and confirm.
 
 If you ever need a separate instance on a different port, run it from a terminal with `-port`:
 ```powershell

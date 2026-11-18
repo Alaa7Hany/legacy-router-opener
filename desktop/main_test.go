@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/alaa/legacyrouteropener/internal/proxy"
+	"github.com/alaa/legacyrouteropener/internal/upstream"
 )
 
 func TestListenWithFallbackAndExistingProxy(t *testing.T) {
@@ -58,6 +59,51 @@ func TestListenWithFallbackAndExistingProxy(t *testing.T) {
 	}
 	if !alreadyRunning2 || boundPort2 != proxyPort {
 		t.Fatalf("expected alreadyRunning=true on port %d, got alreadyRunning=%v port=%d", proxyPort, alreadyRunning2, boundPort2)
+	}
+}
+
+func TestExistingProxyReusedAfterPreferredPortBecomesFree(t *testing.T) {
+	preferred, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer preferred.Close()
+	preferredPort := preferred.Addr().(*net.TCPAddr).Port
+	held, fallbackPort, existing, err := listenWithFallback(preferredPort)
+	if err != nil || existing || fallbackPort == preferredPort {
+		t.Fatalf("reserve fallback port = (%d, %t, %v)", fallbackPort, existing, err)
+	}
+	for _, listener := range held {
+		defer listener.Close()
+	}
+	if err := preferred.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	bridge := proxy.NewServer(proxy.Options{ProxyPort: fallbackPort})
+	server := &http.Server{Handler: withInstancePort(bridge, preferredPort)}
+	go server.Serve(held[0])
+	defer server.Close()
+
+	listeners, port, existing, err := listenWithFallback(preferredPort)
+	for _, listener := range listeners {
+		listener.Close()
+	}
+	if err != nil || !existing || port != fallbackPort {
+		t.Fatalf("fallback instance discovery = (%d, %t, %v), want existing on %d", port, existing, err, fallbackPort)
+	}
+}
+
+func TestRunReportsWhenNoPortIsAvailable(t *testing.T) {
+	listener, err := net.Listen("tcp4", "127.0.0.1:65535")
+	if err != nil {
+		t.Skipf("cannot reserve the final port for this test: %v", err)
+	}
+	defer listener.Close()
+
+	err = run(t.Context(), launchOptions{port: 65535, noBrowser: true})
+	if err == nil || !strings.Contains(err.Error(), "Could not start Router Page Opener: no available proxy port") {
+		t.Fatalf("unexpected startup result: %v", err)
 	}
 }
 
@@ -113,12 +159,12 @@ func TestRSA1024And3DESWithGoDebugDirectives(t *testing.T) {
 		}
 	}()
 
-	client := proxy.NewClient(4, nil)
+	client := upstream.NewClient(4, nil)
 	resp, _, err := client.SendRequest(
 		context.Background(),
 		"https://"+rawLn.Addr().String(),
-		proxy.FindPreset("huawei-zte"),
-		proxy.UpstreamRequest{Method: http.MethodGet, Path: "/"},
+		upstream.FindPreset("huawei-zte"),
+		upstream.UpstreamRequest{Method: http.MethodGet, Path: "/"},
 		"",
 	)
 	if err != nil {
