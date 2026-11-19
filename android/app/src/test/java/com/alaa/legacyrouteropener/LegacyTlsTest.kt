@@ -1,8 +1,8 @@
 package com.alaa.legacyrouteropener
 
-import com.alaa.legacyrouteropener.data.model.Endpoint
-import com.alaa.legacyrouteropener.data.model.HardwarePreset
-import com.alaa.legacyrouteropener.data.model.RouterRequest
+import com.alaa.legacyrouteropener.domain.model.Endpoint
+import com.alaa.legacyrouteropener.domain.model.HardwarePreset
+import com.alaa.legacyrouteropener.data.network.RouterRequest
 import com.alaa.legacyrouteropener.data.network.*
 import org.bouncycastle.asn1.x500.X500Name
 import org.bouncycastle.cert.jcajce.JcaX509v3CertificateBuilder

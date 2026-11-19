@@ -9,9 +9,10 @@ import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.unit.LayoutDirection
+import com.alaa.legacyrouteropener.domain.model.AppLanguage
 
 @Composable
-fun LegacyRouterOpenerTheme(language: String, content: @Composable () -> Unit) {
+fun LegacyRouterOpenerTheme(language: AppLanguage, content: @Composable () -> Unit) {
     val dark = isSystemInDarkTheme()
     val colors = if (dark) darkBridge else lightBridge
     val base = if (dark) darkColorScheme() else lightColorScheme()
@@ -25,7 +26,7 @@ fun LegacyRouterOpenerTheme(language: String, content: @Composable () -> Unit) {
     )
     CompositionLocalProvider(
         LocalBridgeColors provides colors,
-        LocalLayoutDirection provides if (language == "ar") LayoutDirection.Rtl else LayoutDirection.Ltr
+        LocalLayoutDirection provides if (language.isRtl) LayoutDirection.Rtl else LayoutDirection.Ltr
     ) {
         MaterialTheme(colorScheme = scheme, typography = Typography, content = content)
     }

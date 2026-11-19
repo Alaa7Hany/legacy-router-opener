@@ -1,6 +1,6 @@
-package com.alaa.legacyrouteropener.domain.server
+package com.alaa.legacyrouteropener.data.proxy
 
-import com.alaa.legacyrouteropener.data.model.Endpoint
+import com.alaa.legacyrouteropener.domain.model.Endpoint
 import com.alaa.legacyrouteropener.data.network.BodyTooLarge
 import com.alaa.legacyrouteropener.data.network.MIB
 import com.alaa.legacyrouteropener.data.network.MemoryBudget
@@ -67,11 +67,7 @@ internal class ResponseTransformer(private val endpoint: Endpoint, private val a
             val output = WireBody(budget, MAX_TEXT)
             try {
                 // Closing the encoder flushes stateful encodings, while the body remains owned by the caller.
-                val sink = object : java.io.OutputStream() {
-                    override fun write(value: Int) = output.write(value)
-                    override fun write(bytes: ByteArray, offset: Int, length: Int) = output.write(bytes, offset, length)
-                }
-                OutputStreamWriter(sink, charset).use { writer ->
+                OutputStreamWriter(output.asOutputStream(), charset).use { writer ->
                     var position = 0
                     do {
                         writer.write(chars, position, matcher.start() - position)

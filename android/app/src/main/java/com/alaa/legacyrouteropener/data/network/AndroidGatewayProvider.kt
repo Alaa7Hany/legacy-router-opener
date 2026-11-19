@@ -1,15 +1,18 @@
-package com.alaa.legacyrouteropener.domain.util
+package com.alaa.legacyrouteropener.data.network
 
 import android.content.Context
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import android.net.wifi.WifiManager
+import com.alaa.legacyrouteropener.domain.server.GatewayProvider
 import java.net.Inet4Address
 
-internal object GatewayDetector {
+internal class AndroidGatewayProvider(context: Context) : GatewayProvider {
+    private val appContext = context.applicationContext
+
     @Suppress("DEPRECATION")
-    fun detectGatewayIp(context: Context): String? {
-        val connectivity = context.getSystemService(ConnectivityManager::class.java)
+    override fun detectGatewayIp(): String? {
+        val connectivity = appContext.getSystemService(ConnectivityManager::class.java) ?: return null
         val candidates = listOfNotNull(connectivity.activeNetwork) + connectivity.allNetworks
         for (network in candidates.distinct()) {
             val capabilities = connectivity.getNetworkCapabilities(network) ?: continue
@@ -20,8 +23,7 @@ internal object GatewayDetector {
             }
             route?.gateway?.hostAddress?.let { return it }
         }
-        val address = context.applicationContext.getSystemService(WifiManager::class.java)
-            ?.dhcpInfo?.gateway ?: 0
+        val address = appContext.getSystemService(WifiManager::class.java)?.dhcpInfo?.gateway ?: 0
         if (address == 0) return null
         return (0..3).joinToString(".") { shift -> ((address ushr (shift * 8)) and 255).toString() }
     }

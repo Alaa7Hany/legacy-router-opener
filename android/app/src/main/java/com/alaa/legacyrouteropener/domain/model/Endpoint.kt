@@ -1,8 +1,10 @@
-package com.alaa.legacyrouteropener.data.model
+package com.alaa.legacyrouteropener.domain.model
 
 import java.net.Inet6Address
 import java.net.InetAddress
 import java.util.Locale
+
+class EndpointParseException(val error: ValidationError) : IllegalArgumentException(error.messageKey)
 
 data class Endpoint(
     val host: String,
@@ -19,25 +21,29 @@ data class Endpoint(
         private val label = Regex("[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?")
         private val digits = Regex("[0-9]+")
 
+        private fun requireEndpoint(condition: Boolean, error: ValidationError) {
+            if (!condition) throw EndpointParseException(error)
+        }
+
         fun parse(input: String): Endpoint {
             val value = input.trim(' ')
-            require(value.isNotEmpty()) { "address_required" }
-            require(value.none(Char::isWhitespace)) { "address_spaces" }
-            require(value.none { it.code < 32 || it.code == 127 || it in "@<>\"'\\?#%" }) { "address_invalid" }
+            requireEndpoint(value.isNotEmpty(), ValidationError.ADDRESS_REQUIRED)
+            requireEndpoint(value.none(Char::isWhitespace), ValidationError.ADDRESS_SPACES)
+            requireEndpoint(value.none { it.code < 32 || it.code == 127 || it in "@<>\"'\\?#%" }, ValidationError.ADDRESS_INVALID)
             val scheme = value.substringBefore("://", "").lowercase(Locale.ROOT)
-            require("://" !in value || scheme in setOf("http", "https")) { "address_invalid" }
+            requireEndpoint("://" !in value || scheme in setOf("http", "https"), ValidationError.ADDRESS_INVALID)
             val authority = value.substringAfter("://").substringBefore('/')
             val host: String
             val portText: String?
             when {
                 authority.startsWith('[') -> {
                     val close = authority.indexOf(']')
-                    require(close > 1) { "address_invalid" }
+                    requireEndpoint(close > 1, ValidationError.ADDRESS_INVALID)
                     host = authority.substring(1, close)
                     val suffix = authority.substring(close + 1)
-                    require(suffix.isEmpty() || suffix.startsWith(':')) { "address_invalid" }
+                    requireEndpoint(suffix.isEmpty() || suffix.startsWith(':'), ValidationError.ADDRESS_INVALID)
                     portText = suffix.takeIf { it.isNotEmpty() }?.drop(1)
-                    require(':' in host) { "address_invalid" }
+                    requireEndpoint(':' in host, ValidationError.ADDRESS_INVALID)
                 }
                 authority.count { it == ':' } == 1 -> {
                     host = authority.substringBefore(':')
@@ -59,14 +65,14 @@ data class Endpoint(
                 }
                 else -> normalized.length <= 253 && normalized.split('.').all(label::matches)
             }
-            require(validHost) { "address_invalid" }
+            requireEndpoint(validHost, ValidationError.ADDRESS_INVALID)
             val port = portText?.let {
-                require(digits.matches(it)) { "address_invalid" }
+                requireEndpoint(digits.matches(it), ValidationError.ADDRESS_INVALID)
                 it.toIntOrNull()?.takeIf { port -> port in 1..65535 }
-                    ?: throw IllegalArgumentException("address_invalid")
+                    ?: throw EndpointParseException(ValidationError.ADDRESS_INVALID)
             } ?: if (scheme == "http") 80 else 443
             val tls = scheme == "https" || (scheme.isEmpty() && port != 80)
-            require(normalized != "localhost" && !normalized.endsWith(".localhost")) { "address_self_blocked" }
+            requireEndpoint(normalized != "localhost" && !normalized.endsWith(".localhost"), ValidationError.ADDRESS_SELF_BLOCKED)
             return Endpoint(normalized, port, tls, scheme.isNotEmpty(), portText != null)
         }
     }

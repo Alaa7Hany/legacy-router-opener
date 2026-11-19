@@ -1,4 +1,4 @@
-package com.alaa.legacyrouteropener.data.model
+package com.alaa.legacyrouteropener.domain.model
 
 data class TlsInfo(
     val target: String,

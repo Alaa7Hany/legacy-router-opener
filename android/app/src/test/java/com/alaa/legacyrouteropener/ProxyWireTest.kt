@@ -1,13 +1,16 @@
 package com.alaa.legacyrouteropener
 
-import com.alaa.legacyrouteropener.data.model.Endpoint
-import com.alaa.legacyrouteropener.data.model.HardwarePreset
-import com.alaa.legacyrouteropener.data.model.RouterRequest
-import com.alaa.legacyrouteropener.data.model.RouterResponse
+import com.alaa.legacyrouteropener.domain.model.AppLanguage
+import com.alaa.legacyrouteropener.domain.model.Endpoint
+import com.alaa.legacyrouteropener.domain.model.HardwarePreset
+import com.alaa.legacyrouteropener.data.network.RouterRequest
+import com.alaa.legacyrouteropener.data.network.RouterResponse
+import com.alaa.legacyrouteropener.domain.model.TlsInfo
 import com.alaa.legacyrouteropener.data.network.*
 import com.alaa.legacyrouteropener.data.repository.SessionCookieJar
-import com.alaa.legacyrouteropener.domain.server.LocalHttpServer
-import com.alaa.legacyrouteropener.domain.server.ResponseTransformer
+import com.alaa.legacyrouteropener.data.proxy.LocalHttpServer
+import com.alaa.legacyrouteropener.data.proxy.ProxyServer
+import com.alaa.legacyrouteropener.data.proxy.ResponseTransformer
 import org.junit.Assert.*
 import org.junit.Test
 import java.io.ByteArrayInputStream
@@ -27,12 +30,12 @@ class ProxyWireTest {
 
     @Test fun listenerValidatesAuthorityAndFraming() {
         val budget = MemoryBudget()
-        LocalHttpServer(hostname, 0, budget, { request ->
-            val body = WireBody(budget)
-            body.write("${request.path}:${request.body.inputStream().reader().readText()}".toByteArray())
-            RouterResponse(200, mapOf("set-cookie" to listOf("one=1", "two=2")), body)
-        }).use { server ->
-            server.start()
+        LocalHttpServer(hostname, 0, budget).use { server ->
+            server.start { request ->
+                val body = WireBody(budget)
+                body.write("${request.path}:${request.body.inputStream().reader().readText()}".toByteArray())
+                RouterResponse(200, mapOf("set-cookie" to listOf("one=1", "two=2")), body)
+            }
             val host = "Host: $hostname:${server.port}\r\n"
             val examples = listOf(
                 "" to 400, "$host$host" to 400, "Host: old.localhost:${server.port}\r\n" to 404,
@@ -70,14 +73,14 @@ class ProxyWireTest {
     @Test fun blockedResponseWriteReleasesTheBudget() {
         val budget = MemoryBudget()
         val ready = CountDownLatch(1)
-        LocalHttpServer(hostname, 0, budget, {
-            val body = WireBody(budget)
-            val data = ByteArray(MIB)
-            repeat(16) { body.write(data) }
-            ready.countDown()
-            RouterResponse(200, emptyMap(), body)
-        }, writeTimeoutMillis = 400).use { server ->
-            server.start()
+        LocalHttpServer(hostname, 0, budget, writeTimeoutMillis = 400).use { server ->
+            server.start {
+                val body = WireBody(budget)
+                val data = ByteArray(MIB)
+                repeat(16) { body.write(data) }
+                ready.countDown()
+                RouterResponse(200, emptyMap(), body)
+            }
             Socket().use { socket ->
                 socket.receiveBufferSize = 1024
                 socket.connect(java.net.InetSocketAddress("127.0.0.1", server.port))
@@ -92,9 +95,8 @@ class ProxyWireTest {
 
     @Test fun incompleteHeadersCannotKeepAWorker() {
         val budget = MemoryBudget()
-        LocalHttpServer(hostname, 0, budget, { error("Incomplete headers must not dispatch") },
-            headerTimeoutMillis = 250).use { server ->
-            server.start()
+        LocalHttpServer(hostname, 0, budget, headerTimeoutMillis = 250).use { server ->
+            server.start { error("Incomplete headers must not dispatch") }
             val response = send(server.port, "GET /")
             assertTrue(response.isEmpty() || response.startsWith("HTTP/1.1 408"))
         }
@@ -103,8 +105,8 @@ class ProxyWireTest {
     @Test fun saturatedListenerRejectsAndRetirementClosesQueuedSockets() {
         val budget = MemoryBudget()
         val sockets = mutableListOf<Socket>()
-        LocalHttpServer(hostname, 0, budget, { error("Incomplete headers must not dispatch") }).use { server ->
-            server.start()
+        LocalHttpServer(hostname, 0, budget).use { server ->
+            server.start { error("Incomplete headers must not dispatch") }
             try {
                 repeat(49) {
                     sockets += Socket("127.0.0.1", server.port).apply { soTimeout = 3000 }
@@ -121,10 +123,7 @@ class ProxyWireTest {
     @Test fun decompressionAndRewriteChargeOverlappingAllocations() {
         val smaller = MemoryBudget(64 * 1024)
         WireBody(smaller).use { compressed ->
-            GZIPOutputStream(object : java.io.OutputStream() {
-                override fun write(value: Int) = compressed.write(value)
-                override fun write(bytes: ByteArray, off: Int, len: Int) = compressed.write(bytes, off, len)
-            }).use { it.write(ByteArray(64 * 1024)) }
+            GZIPOutputStream(compressed.asOutputStream()).use { it.write(ByteArray(64 * 1024)) }
             assertThrows(BudgetExceeded::class.java) { HttpWireCodec.decode(compressed, "gzip", smaller) }
             assertEquals(32 * 1024, smaller.used)
         }
@@ -226,7 +225,7 @@ class ProxyWireTest {
     }
 
     @Test fun legacyRouterCookiesSurviveSubpathsAndOldClock() {
-        val jar = SessionCookieJar(seedHuawei = true)
+        val jar = SessionCookieJar(HardwarePreset.find("auto").seedCookies)
         jar.save(listOf("SessionID_R3=abc123; Expires=Sun, 02 Jan 2000 22:00:00 GMT; Path=/index; Secure; HttpOnly"))
         val merged = jar.merge(emptyList())
         assertTrue(merged.contains("SessionID_R3=abc123"))
@@ -240,6 +239,88 @@ class ProxyWireTest {
         assertTrue(cleaned.contains("SameSite=Lax"))
         assertFalse(cleaned.contains("Secure", ignoreCase = true))
         assertFalse(cleaned.contains("Expires=", ignoreCase = true))
+    }
+
+    @Test fun staticCacheAccountsForMemoryBudgetAndReleasesOnClose() {
+        val budget = MemoryBudget()
+        val endpoint = Endpoint.parse("http://192.168.1.1")
+        var upstreamCalls = 0
+        val upstream = object : RouterHttpClient {
+            override fun send(request: RouterRequest, cookies: String): UpstreamResult {
+                upstreamCalls++
+                val body = WireBody(budget).apply { write("body { color: #000; }".toByteArray()) }
+                return UpstreamResult(
+                    RouterResponse(200, mapOf("content-type" to listOf("text/css")), body),
+                    endpoint,
+                    TlsInfo(endpoint.authority, "HTTP")
+                )
+            }
+        }
+        ProxyServer(
+            endpoint = endpoint,
+            authority = "session.localhost:8080",
+            preset = HardwarePreset.find("auto"),
+            budget = budget,
+            upstream = upstream,
+            language = { AppLanguage.EN },
+            message = { _, key -> key },
+            telemetry = {},
+            log = {}
+        ).use { server ->
+            WireBody(budget).use { reqBody ->
+                server.serve(RouterRequest("GET", "/css/main.css", emptyMap(), reqBody)).use { res ->
+                    assertEquals(200, res.status)
+                }
+            }
+            assertEquals(1, upstreamCalls)
+            assertTrue("Cached asset should remain charged to MemoryBudget", budget.used > 0)
+
+            WireBody(budget).use { reqBody ->
+                server.serve(RouterRequest("GET", "/css/main.css", emptyMap(), reqBody)).use { res ->
+                    assertEquals(200, res.status)
+                }
+            }
+            assertEquals(1, upstreamCalls)
+        }
+        assertEquals(0, budget.used)
+    }
+
+    @Test fun directClientFallsBackToSecondResolvedAddress() {
+        val budget = MemoryBudget()
+        SocketRegistry().use { sockets ->
+            ServerSocket(0, 4, InetAddress.getByName("127.0.0.1")).use { upstream ->
+                val done = CountDownLatch(1)
+                thread(isDaemon = true) {
+                    upstream.accept().use { socket ->
+                        val head = HttpWireCodec.readRequest(socket.getInputStream())
+                        HttpWireCodec.body(socket.getInputStream(), head.headers, budget, false).close()
+                        val reply = "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nOK"
+                        socket.getOutputStream().write(reply.toByteArray(Charsets.ISO_8859_1))
+                        socket.getOutputStream().flush()
+                        done.countDown()
+                    }
+                }
+                val deadLoopback = InetAddress.getByAddress("router.local", byteArrayOf(127, 0, 0, 2))
+                val liveLoopback = InetAddress.getByName("127.0.0.1")
+                val client = DirectRouterHttpClient(
+                    target = Endpoint.parse("http://router.local:${upstream.localPort}"),
+                    preset = HardwarePreset.find("auto"),
+                    budget = budget,
+                    sockets = sockets,
+                    blockedPort = 8080,
+                    origin = "http://test.localhost:8080",
+                    dnsResolver = { arrayOf(deadLoopback, liveLoopback) }
+                )
+                WireBody(budget).use { reqBody ->
+                    client.send(RouterRequest("GET", "/", emptyMap(), reqBody), "").response.use { res ->
+                        assertEquals(200, res.status)
+                        assertEquals("OK", res.body.inputStream().reader().readText())
+                    }
+                }
+                assertTrue(done.await(3, TimeUnit.SECONDS))
+            }
+        }
+        assertEquals(0, budget.used)
     }
 
     private fun send(port: Int, wire: String): String = Socket("127.0.0.1", port).use {

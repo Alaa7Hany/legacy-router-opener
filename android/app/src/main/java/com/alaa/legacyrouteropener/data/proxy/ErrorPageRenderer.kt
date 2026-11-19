@@ -1,12 +1,13 @@
-package com.alaa.legacyrouteropener.domain.server
+package com.alaa.legacyrouteropener.data.proxy
 
-internal class ErrorPageRenderer(private val message: (String) -> String) {
-    fun render(language: String, address: String): ByteArray {
-        val lang = if (language == "ar") "ar" else "en"
-        val direction = if (lang == "ar") "rtl" else "ltr"
-        fun copy(key: String) = escape(message(key))
+import com.alaa.legacyrouteropener.domain.model.AppLanguage
+
+internal class ErrorPageRenderer(private val message: (AppLanguage, String) -> String) {
+    fun render(language: AppLanguage, address: String): ByteArray {
+        val direction = if (language.isRtl) "rtl" else "ltr"
+        fun copy(key: String) = escape(message(language, key))
         return """<!doctype html>
-            <html lang="$lang" dir="$direction"><head><meta charset="utf-8">
+            <html lang="${language.code}" dir="$direction"><head><meta charset="utf-8">
             <meta name="viewport" content="width=device-width,initial-scale=1">
             <title>${copy("error_title")}</title>
             <style>

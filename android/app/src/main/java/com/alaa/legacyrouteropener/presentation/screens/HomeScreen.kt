@@ -1,11 +1,6 @@
 package com.alaa.legacyrouteropener.presentation.screens
 
-import android.content.ActivityNotFoundException
-import android.content.Intent
-import android.net.Uri
-import android.provider.Browser
 import androidx.compose.foundation.BorderStroke
-import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -21,7 +16,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
@@ -34,26 +28,45 @@ import androidx.compose.ui.text.style.TextDirection
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.alaa.legacyrouteropener.data.model.HardwarePreset
-import com.alaa.legacyrouteropener.data.model.ProxyState
-import com.alaa.legacyrouteropener.presentation.MainViewModel
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.alaa.legacyrouteropener.domain.model.AppLanguage
+import com.alaa.legacyrouteropener.domain.model.BannerMessage
+import com.alaa.legacyrouteropener.domain.model.HardwarePreset
+import com.alaa.legacyrouteropener.domain.model.ProxyState
+import com.alaa.legacyrouteropener.domain.model.TlsInfo
 import com.alaa.legacyrouteropener.presentation.components.BridgeIcons
 import com.alaa.legacyrouteropener.ui.theme.LocalBridgeColors
-import kotlinx.coroutines.launch
+import kotlinx.coroutines.flow.StateFlow
+
+@Immutable
+internal data class HomeActions(
+    val onOpenInApp: () -> Unit,
+    val onOpenExternal: () -> Unit,
+    val onUpdateRouterIp: (String) -> Unit,
+    val onChoosePreset: (HardwarePreset) -> Unit,
+    val onChooseLanguage: (AppLanguage) -> Unit,
+    val onUseDetected: () -> Unit,
+    val onApplyChanges: () -> Unit,
+    val onResetLogin: () -> Unit,
+    val onStopProxy: () -> Unit,
+    val onClearLogs: () -> Unit
+)
 
 @Composable
-internal fun HomeScreen(state: ProxyState, msg: (String) -> String, viewModel: MainViewModel) {
-    val context = LocalContext.current
+internal fun HomeScreen(
+    state: ProxyState,
+    logsFlow: StateFlow<List<String>>,
+    opening: Boolean,
+    browserUnavailable: Boolean,
+    msg: (String) -> String,
+    actions: HomeActions
+) {
     val colors = LocalBridgeColors.current
-    val scope = rememberCoroutineScope()
     val addressFocus = remember { FocusRequester() }
     var deviceExpanded by rememberSaveable { mutableStateOf(false) }
     var detailsExpanded by rememberSaveable { mutableStateOf(false) }
     var loginHelp by rememberSaveable { mutableStateOf(false) }
     var addressHelp by rememberSaveable { mutableStateOf(false) }
-    var languageMenu by remember { mutableStateOf(false) }
-    var browserError by remember { mutableStateOf(false) }
-    var opening by remember { mutableStateOf(false) }
     val rtl = LocalLayoutDirection.current == LayoutDirection.Rtl
 
     LaunchedEffect(state.validationError) {
@@ -61,25 +74,6 @@ internal fun HomeScreen(state: ProxyState, msg: (String) -> String, viewModel: M
             deviceExpanded = true
             withFrameNanos { }
             addressFocus.requestFocus()
-        }
-    }
-
-    fun open(external: Boolean) {
-        if (opening) return
-        opening = true
-        browserError = false
-        scope.launch {
-            try {
-                val url = viewModel.startProxy() ?: return@launch
-                val intent = if (external) {
-                    Intent(Intent.ACTION_VIEW, Uri.parse(url)).putExtra(Browser.EXTRA_CREATE_NEW_TAB, true)
-                } else Intent(context, WebViewActivity::class.java).putExtra(WebViewActivity.URL, url)
-                context.startActivity(intent)
-            } catch (_: ActivityNotFoundException) {
-                browserError = true
-            } finally {
-                opening = false
-            }
         }
     }
 
@@ -101,35 +95,12 @@ internal fun HomeScreen(state: ProxyState, msg: (String) -> String, viewModel: M
                     border = BorderStroke(1.dp, colors.border), shadowElevation = 1.dp
                 ) {
                     Column(Modifier.padding(24.dp)) {
-                        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                            Text(msg("app_title"), modifier = Modifier.weight(1f), fontSize = 20.sp,
-                                fontWeight = FontWeight.Bold, lineHeight = 25.sp)
-                            Box {
-                                TextButton(onClick = { languageMenu = true },
-                                    contentPadding = PaddingValues(horizontal = 4.dp)) {
-                                    Icon(BridgeIcons.Globe, null, Modifier.size(17.dp), tint = colors.muted)
-                                    Spacer(Modifier.width(4.dp))
-                                    Text(msg("language_label"), fontSize = 13.sp, color = colors.muted)
-                                }
-                                DropdownMenu(expanded = languageMenu, onDismissRequest = { languageMenu = false }) {
-                                    for ((language, label) in listOf("en" to "English", "ar" to "العربية")) {
-                                        DropdownMenuItem(
-                                            text = { Text(label, fontWeight = if (state.language == language)
-                                                FontWeight.Bold else FontWeight.Normal) },
-                                            onClick = {
-                                                viewModel.chooseLanguage(language)
-                                                languageMenu = false
-                                            }
-                                        )
-                                    }
-                                }
-                            }
-                        }
+                        OpenerHeader(state.language, msg, actions.onChooseLanguage)
                         Text(msg("device_address") + " " + isolate(state.activeTarget ?: state.routerIp),
                             color = colors.muted, fontSize = 14.sp)
                         Spacer(Modifier.height(20.dp))
                         Button(
-                            onClick = { open(false) }, enabled = !opening,
+                            onClick = actions.onOpenInApp, enabled = !opening,
                             modifier = Modifier.fillMaxWidth().heightIn(min = 50.dp),
                             shape = RoundedCornerShape(8.dp)
                         ) {
@@ -138,58 +109,40 @@ internal fun HomeScreen(state: ProxyState, msg: (String) -> String, viewModel: M
                             Text(if (rtl) "↖" else "↗", fontSize = 17.sp)
                         }
                         Row(Modifier.align(Alignment.CenterHorizontally)) {
-                            BridgeLink(msg("open_external"), enabled = !opening) { open(true) }
+                            BridgeLink(msg("open_external"), enabled = !opening, onClick = actions.onOpenExternal)
                         }
                         Row(Modifier.align(Alignment.CenterHorizontally), verticalAlignment = Alignment.CenterVertically) {
-                            BridgeLink(msg("fix_login"), onClick = viewModel::resetLogin)
+                            BridgeLink(msg("fix_login"), onClick = actions.onResetLogin)
                             HelpButton(msg("login_help_label")) { loginHelp = !loginHelp }
                         }
                         if (loginHelp) InlineNote(msg("login_help"))
-                        val banner = if (browserError) "browser_unavailable" else state.banner
+                        val banner = if (browserUnavailable) BannerMessage.BROWSER_UNAVAILABLE else state.banner
                         if (banner != null) {
-                            val bad = banner.endsWith("_failed") || browserError
-                            InlineNote(msg(banner), if (bad) colors.error else colors.success)
+                            InlineNote(msg(banner.messageKey), if (banner.isError) colors.error else colors.success)
                         }
                         HorizontalDivider(color = colors.border)
                         Disclosure(msg("change_device"), deviceExpanded, msg) { deviceExpanded = !deviceExpanded }
                         if (deviceExpanded) {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Text(msg("device_address"), fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
-                                HelpButton(msg("address_help_label")) { addressHelp = !addressHelp }
-                            }
-                            if (addressHelp) InlineNote(msg("address_help") + " " + msg("example") + " " + isolate("192.168.1.1:443"))
-                            OutlinedTextField(
-                                value = state.routerIp, onValueChange = viewModel::updateRouterIp,
-                                modifier = Modifier.fillMaxWidth().focusRequester(addressFocus)
-                                    .semantics { contentDescription = msg("device_address") },
-                                singleLine = true, isError = state.validationError != null,
-                                textStyle = MaterialTheme.typography.bodyMedium.copy(textDirection = TextDirection.Ltr),
-                                placeholder = { Text("192.168.1.1") },
-                                supportingText = state.validationError?.let { error -> { Text(msg(error)) } }
+                            DeviceSettingsSection(
+                                state = state,
+                                addressFocus = addressFocus,
+                                addressHelp = addressHelp,
+                                onToggleAddressHelp = { addressHelp = !addressHelp },
+                                msg = msg,
+                                actions = actions
                             )
-                            state.detectedGateway?.let { gateway ->
-                                BridgeLink(msg("use_detected") + " " + isolate(gateway), onClick = viewModel::useDetected)
-                            }
-                            Spacer(Modifier.height(8.dp))
-                            PresetPicker(state.presetId, msg, viewModel::choosePreset)
-                            Spacer(Modifier.height(12.dp))
-                            OutlinedButton(
-                                onClick = viewModel::applyChanges,
-                                border = BorderStroke(1.dp, colors.strongBorder), shape = RoundedCornerShape(8.dp),
-                                colors = ButtonDefaults.outlinedButtonColors(containerColor = colors.alternate,
-                                    contentColor = colors.text)
-                            ) { Text(msg("apply")) }
-                            Spacer(Modifier.height(8.dp))
                         }
                         HorizontalDivider(color = colors.border)
                         Disclosure(msg("connection_details"), detailsExpanded, msg) { detailsExpanded = !detailsExpanded }
-                        if (detailsExpanded) ConnectionDetails(state, msg, viewModel::clearLogs)
+                        if (detailsExpanded) {
+                            ConnectionDetails(state.tlsInfo, logsFlow, msg, actions.onClearLogs)
+                        }
                         if (state.isRunning) {
                             HorizontalDivider(color = colors.border)
                             Column(Modifier.fillMaxWidth().padding(top = 12.dp),
                                 horizontalAlignment = Alignment.CenterHorizontally) {
                                 Text(msg("proxy_active"), color = colors.muted, fontSize = 13.sp)
-                                BridgeLink(msg("stop_proxy"), onClick = viewModel::stopProxy)
+                                BridgeLink(msg("stop_proxy"), onClick = actions.onStopProxy)
                             }
                         }
                     }
@@ -197,6 +150,85 @@ internal fun HomeScreen(state: ProxyState, msg: (String) -> String, viewModel: M
             }
         }
     }
+}
+
+@Composable
+private fun OpenerHeader(
+    selectedLanguage: AppLanguage,
+    msg: (String) -> String,
+    onChooseLanguage: (AppLanguage) -> Unit
+) {
+    val colors = LocalBridgeColors.current
+    var languageMenu by remember { mutableStateOf(false) }
+    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+        Text(msg("app_title"), modifier = Modifier.weight(1f), fontSize = 20.sp,
+            fontWeight = FontWeight.Bold, lineHeight = 25.sp)
+        Box {
+            TextButton(onClick = { languageMenu = true },
+                contentPadding = PaddingValues(horizontal = 4.dp)) {
+                Icon(BridgeIcons.Globe, null, Modifier.size(17.dp), tint = colors.muted)
+                Spacer(Modifier.width(4.dp))
+                Text(msg("language_label"), fontSize = 13.sp, color = colors.muted)
+            }
+            DropdownMenu(expanded = languageMenu, onDismissRequest = { languageMenu = false }) {
+                for (language in AppLanguage.entries) {
+                    DropdownMenuItem(
+                        text = {
+                            Text(
+                                language.displayName,
+                                fontWeight = if (selectedLanguage == language) FontWeight.Bold else FontWeight.Normal
+                            )
+                        },
+                        onClick = {
+                            onChooseLanguage(language)
+                            languageMenu = false
+                        }
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun DeviceSettingsSection(
+    state: ProxyState,
+    addressFocus: FocusRequester,
+    addressHelp: Boolean,
+    onToggleAddressHelp: () -> Unit,
+    msg: (String) -> String,
+    actions: HomeActions
+) {
+    val colors = LocalBridgeColors.current
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Text(msg("device_address"), fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
+        HelpButton(msg("address_help_label"), onToggleAddressHelp)
+    }
+    if (addressHelp) {
+        InlineNote(msg("address_help") + " " + msg("example") + " " + isolate("192.168.1.1:443"))
+    }
+    OutlinedTextField(
+        value = state.routerIp, onValueChange = actions.onUpdateRouterIp,
+        modifier = Modifier.fillMaxWidth().focusRequester(addressFocus)
+            .semantics { contentDescription = msg("device_address") },
+        singleLine = true, isError = state.validationError != null,
+        textStyle = MaterialTheme.typography.bodyMedium.copy(textDirection = TextDirection.Ltr),
+        placeholder = { Text("192.168.1.1") },
+        supportingText = state.validationError?.let { error -> { Text(msg(error.messageKey)) } }
+    )
+    state.detectedGateway?.let { gateway ->
+        BridgeLink(msg("use_detected") + " " + isolate(gateway), onClick = actions.onUseDetected)
+    }
+    Spacer(Modifier.height(8.dp))
+    PresetPicker(state.presetId, msg, actions.onChoosePreset)
+    Spacer(Modifier.height(12.dp))
+    OutlinedButton(
+        onClick = actions.onApplyChanges,
+        border = BorderStroke(1.dp, colors.strongBorder), shape = RoundedCornerShape(8.dp),
+        colors = ButtonDefaults.outlinedButtonColors(containerColor = colors.alternate,
+            contentColor = colors.text)
+    ) { Text(msg("apply")) }
+    Spacer(Modifier.height(8.dp))
 }
 
 @Composable
@@ -226,24 +258,29 @@ private fun PresetPicker(id: String, msg: (String) -> String, choose: (HardwareP
 }
 
 @Composable
-private fun ConnectionDetails(state: ProxyState, msg: (String) -> String, onClear: () -> Unit) {
+private fun ConnectionDetails(
+    tlsInfo: TlsInfo?,
+    logsFlow: StateFlow<List<String>>,
+    msg: (String) -> String,
+    onClear: () -> Unit
+) {
     val colors = LocalBridgeColors.current
+    val logEntries by logsFlow.collectAsStateWithLifecycle()
     Row(verticalAlignment = Alignment.CenterVertically) {
-        val info = state.tlsInfo
         Text(
-            info?.let { isolate(listOfNotNull(it.protocol, it.cipherSuite).joinToString(" · ")) }
+            tlsInfo?.let { isolate(listOfNotNull(it.protocol, it.cipherSuite).joinToString(" · ")) }
                 ?: msg("connection_idle"),
             modifier = Modifier.weight(1f), color = colors.muted, fontSize = 13.sp
         )
         BridgeLink(msg("clear"), onClick = onClear)
     }
-    state.tlsInfo?.takeIf { it.peerSubject != null }?.let {
+    tlsInfo?.takeIf { it.peerSubject != null }?.let {
         Text(msg("identity_unverified") + " · " + isolate(it.peerSubject.orEmpty()),
             color = colors.warning, fontSize = 13.sp)
     }
     val logs = rememberLazyListState()
-    LaunchedEffect(state.logs) {
-        if (state.logs.isNotEmpty()) logs.scrollToItem(state.logs.lastIndex)
+    LaunchedEffect(logEntries) {
+        if (logEntries.isNotEmpty()) logs.scrollToItem(logEntries.lastIndex)
     }
     Surface(
         color = colors.terminal, border = BorderStroke(1.dp, colors.border), shape = RoundedCornerShape(8.dp),
@@ -252,8 +289,8 @@ private fun ConnectionDetails(state: ProxyState, msg: (String) -> String, onClea
         CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Ltr) {
             LazyColumn(state = logs, contentPadding = PaddingValues(12.dp),
                 verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                if (state.logs.isEmpty()) item { Text(msg("logs_empty"), color = colors.muted, fontSize = 13.sp) }
-                items(state.logs) { line ->
+                if (logEntries.isEmpty()) item { Text(msg("logs_empty"), color = colors.muted, fontSize = 13.sp) }
+                items(logEntries) { line ->
                     val color = when {
                         line.startsWith("[ERR]") -> colors.error
                         line.startsWith("[CACHE]") -> colors.info

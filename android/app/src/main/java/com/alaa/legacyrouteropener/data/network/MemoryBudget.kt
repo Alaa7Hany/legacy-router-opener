@@ -33,7 +33,7 @@ internal class MemoryBudget(private val limit: Int = 64 * MIB) {
 }
 
 internal class WireBody(private val budget: MemoryBudget, private val limit: Int = 32 * MIB) :
-    OutputStream() {
+    Closeable {
     private class Slab(val bytes: ByteArray, val reservation: Closeable)
     private val slabs = mutableListOf<Slab>()
     private var closed = false
@@ -55,13 +55,15 @@ internal class WireBody(private val budget: MemoryBudget, private val limit: Int
         }
     }
 
-    override fun write(value: Int) {
+    fun write(value: Int) {
         capacity()
         slabs.last().bytes[size % SLAB] = value.toByte()
         size++
     }
 
-    override fun write(bytes: ByteArray, off: Int, len: Int) {
+    fun write(bytes: ByteArray, off: Int = 0, len: Int = bytes.size - off) {
+        check(!closed)
+        if (off < 0 || len < 0 || off > bytes.size - len) throw IndexOutOfBoundsException()
         if (len > limit - size) throw BodyTooLarge()
         var copied = 0
         while (copied < len) {
@@ -73,6 +75,12 @@ internal class WireBody(private val budget: MemoryBudget, private val limit: Int
             size += count
             copied += count
         }
+    }
+
+    /** Returns a non-closing [OutputStream] view so callers can wrap with writers/gzip streams safely. */
+    fun asOutputStream(): OutputStream = object : OutputStream() {
+        override fun write(value: Int) = this@WireBody.write(value)
+        override fun write(bytes: ByteArray, off: Int, len: Int) = this@WireBody.write(bytes, off, len)
     }
 
     fun writeTo(output: OutputStream) {

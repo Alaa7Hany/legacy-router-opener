@@ -1,7 +1,7 @@
-package com.alaa.legacyrouteropener.domain.server
+package com.alaa.legacyrouteropener.data.proxy
 
-import com.alaa.legacyrouteropener.data.model.RouterRequest
-import com.alaa.legacyrouteropener.data.model.RouterResponse
+import com.alaa.legacyrouteropener.data.network.RouterRequest
+import com.alaa.legacyrouteropener.data.network.RouterResponse
 import com.alaa.legacyrouteropener.data.network.*
 import java.io.BufferedInputStream
 import java.io.Closeable
@@ -21,7 +21,6 @@ internal class LocalHttpServer(
     private val hostname: String,
     preferredPort: Int,
     private val budget: MemoryBudget,
-    private val handler: (RouterRequest) -> RouterResponse,
     private val headerTimeoutMillis: Long = 5_000,
     private val bodyTimeoutMillis: Long = 15_000,
     private val writeTimeoutMillis: Long = 15_000
@@ -43,11 +42,11 @@ internal class LocalHttpServer(
     val port: Int = listener.localPort
     private val authority = "$hostname:$port"
 
-    fun start() {
-        Thread(::accept, "router-listener").apply { isDaemon = true }.start()
+    fun start(handler: (RouterRequest) -> RouterResponse) {
+        Thread({ accept(handler) }, "router-listener").apply { isDaemon = true }.start()
     }
 
-    private fun accept() {
+    private fun accept(handler: (RouterRequest) -> RouterResponse) {
         while (!listener.isClosed) {
             val socket = try {
                 clients.track(listener.accept())
@@ -58,7 +57,7 @@ internal class LocalHttpServer(
             try {
                 executor.execute {
                     try {
-                        socket.use { serve(it, accepted) }
+                        socket.use { serve(it, accepted, handler) }
                     } finally {
                         clients.forget(socket)
                     }
@@ -70,7 +69,7 @@ internal class LocalHttpServer(
         }
     }
 
-    private fun serve(socket: Socket, accepted: Long) {
+    private fun serve(socket: Socket, accepted: Long, handler: (RouterRequest) -> RouterResponse) {
         try {
             val input = BufferedInputStream(socket.getInputStream())
             val elapsed = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - accepted)

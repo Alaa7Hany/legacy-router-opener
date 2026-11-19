@@ -1,7 +1,7 @@
 package com.alaa.legacyrouteropener.data.network
 
-import com.alaa.legacyrouteropener.data.model.Endpoint
-import com.alaa.legacyrouteropener.data.model.TlsInfo
+import com.alaa.legacyrouteropener.domain.model.Endpoint
+import com.alaa.legacyrouteropener.domain.model.TlsInfo
 import org.bouncycastle.tls.*
 import org.bouncycastle.tls.crypto.DHGroup
 import java.io.ByteArrayInputStream
@@ -17,7 +17,7 @@ internal enum class TlsProfile { MODERN, LEGACY_STRIPPED, SSLV3_ONLY }
 internal class LegacyRouterTlsClient(
     private val endpoint: Endpoint,
     private val profile: TlsProfile
-) : DefaultTlsClient(LegacyTlsCrypto()) {
+) : DefaultTlsClient(LegacyTlsCrypto.shared) {
     private var certificate: X509Certificate? = null
 
     override fun getProtocolVersions(): Array<ProtocolVersion> = when (profile) {

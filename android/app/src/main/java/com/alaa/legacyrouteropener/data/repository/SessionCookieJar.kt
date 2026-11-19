@@ -1,12 +1,6 @@
 package com.alaa.legacyrouteropener.data.repository
 
-internal class SessionCookieJar(seedHuawei: Boolean) {
-    private val seed = if (seedHuawei) mapOf(
-        "FirstMenu" to "Admin_0",
-        "SecondMenu" to "Admin_0_0",
-        "ThirdMenu" to "Admin_0_0_0",
-        "Language" to "en"
-    ) else emptyMap()
+internal class SessionCookieJar(private val seed: Map<String, String> = emptyMap()) {
     private val stored = LinkedHashMap<String, String>()
 
     @Synchronized

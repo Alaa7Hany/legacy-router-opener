@@ -41,6 +41,10 @@ internal class LegacyTlsCrypto : BcTlsCrypto(SecureRandom()) {
             material.fill(0)
         }
     }
+
+    companion object {
+        val shared = LegacyTlsCrypto()
+    }
 }
 
 private class Rc4RecordCipher(

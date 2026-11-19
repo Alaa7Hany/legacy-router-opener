@@ -2,13 +2,16 @@ package com.alaa.legacyrouteropener.presentation.screens
 
 import android.content.ActivityNotFoundException
 import android.content.Intent
+import android.graphics.Color
 import android.net.Uri
 import android.os.Bundle
 import android.provider.Browser
 import android.view.ViewGroup
+import android.webkit.CookieManager
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
+import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import androidx.activity.ComponentActivity
@@ -19,15 +22,17 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.lifecycleScope
 import com.alaa.legacyrouteropener.BuildConfig
 import com.alaa.legacyrouteropener.LegacyRouterApplication
 import com.alaa.legacyrouteropener.presentation.components.BridgeIcons
 import com.alaa.legacyrouteropener.ui.theme.LegacyRouterOpenerTheme
 import com.alaa.legacyrouteropener.ui.theme.LocalBridgeColors
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import java.io.ByteArrayInputStream
 
@@ -37,9 +42,10 @@ class WebViewActivity : ComponentActivity() {
     @OptIn(ExperimentalMaterial3Api::class)
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        val app = application as LegacyRouterApplication
+        val container = (application as LegacyRouterApplication).container
+        val controller = container.controller
         val url = intent.getStringExtra(URL)
-        if (url == null || url != app.controller.state.value.activeUrl) {
+        if (url == null || url != controller.state.value.activeUrl) {
             finish()
             return
         }
@@ -47,21 +53,24 @@ class WebViewActivity : ComponentActivity() {
         enableEdgeToEdge()
         WebView.setWebContentsDebuggingEnabled(BuildConfig.DEBUG)
         lifecycleScope.launch {
-            app.controller.state.first { it.activeUrl != url }
+            controller.state.first { it.activeUrl != url }
             webView?.stopLoading()
             webView?.clearHistory()
             webView?.clearFormData()
             finish()
         }
 
+        val initialLanguage = controller.state.value.language
+        val languageFlow = controller.state.map { it.language }.distinctUntilChanged()
+
         setContent {
-            val state by app.controller.state.collectAsState()
-            LegacyRouterOpenerTheme(state.language) {
+            val language by languageFlow.collectAsStateWithLifecycle(initialValue = initialLanguage)
+            LegacyRouterOpenerTheme(language) {
                 val colors = LocalBridgeColors.current
                 var canGoBack by remember { mutableStateOf(false) }
                 var progress by remember { mutableIntStateOf(0) }
                 var noBrowser by remember { mutableStateOf(false) }
-                fun msg(key: String) = app.messages[state.language, key]
+                fun msg(key: String) = container.messages[language, key]
                 BackHandler(canGoBack) { webView?.goBack() }
 
                 Scaffold(
@@ -97,7 +106,6 @@ class WebViewActivity : ComponentActivity() {
                             LinearProgressIndicator(progress = { progress / 100f }, modifier = Modifier.fillMaxWidth())
                         }
                         if (noBrowser) Text(msg("browser_unavailable"), color = colors.error)
-                        val background = colors.card.toArgb()
                         AndroidView(
                             modifier = Modifier.fillMaxWidth().weight(1f),
                             factory = { context ->
@@ -106,7 +114,8 @@ class WebViewActivity : ComponentActivity() {
                                         ViewGroup.LayoutParams.MATCH_PARENT,
                                         ViewGroup.LayoutParams.MATCH_PARENT
                                     )
-                                    setBackgroundColor(background)
+                                    // Legacy router HTML frequently omits body backgrounds while styling text dark.
+                                    setBackgroundColor(Color.WHITE)
                                     @Suppress("SetJavaScriptEnabled")
                                     settings.javaScriptEnabled = true
                                     settings.domStorageEnabled = true
@@ -116,9 +125,9 @@ class WebViewActivity : ComponentActivity() {
                                     settings.displayZoomControls = false
                                     settings.allowFileAccess = false
                                     settings.allowContentAccess = false
-                                    settings.mixedContentMode = android.webkit.WebSettings.MIXED_CONTENT_NEVER_ALLOW
+                                    settings.mixedContentMode = WebSettings.MIXED_CONTENT_NEVER_ALLOW
                                     settings.setSupportMultipleWindows(false)
-                                    val cookieManager = android.webkit.CookieManager.getInstance()
+                                    val cookieManager = CookieManager.getInstance()
                                     cookieManager.setAcceptCookie(true)
                                     cookieManager.setAcceptThirdPartyCookies(this, false)
                                     webChromeClient = object : WebChromeClient() {
@@ -152,7 +161,6 @@ class WebViewActivity : ComponentActivity() {
                                     loadUrl(url)
                                 }
                             },
-                            update = { it.setBackgroundColor(background) },
                             onRelease = { view ->
                                 view.stopLoading()
                                 view.destroy()
@@ -163,6 +171,16 @@ class WebViewActivity : ComponentActivity() {
                 }
             }
         }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        webView?.onResume()
+    }
+
+    override fun onPause() {
+        webView?.onPause()
+        super.onPause()
     }
 
     private fun isOrigin(uri: Uri, origin: Uri) =

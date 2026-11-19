@@ -1,79 +1,82 @@
 package com.alaa.legacyrouteropener.domain.server
 
-import android.content.Context
-import com.alaa.legacyrouteropener.data.i18n.BridgeMessages
-import com.alaa.legacyrouteropener.data.model.Endpoint
-import com.alaa.legacyrouteropener.data.model.HardwarePreset
-import com.alaa.legacyrouteropener.data.model.ProxyState
-import com.alaa.legacyrouteropener.data.network.DirectRouterHttpClient
-import com.alaa.legacyrouteropener.data.network.MemoryBudget
-import com.alaa.legacyrouteropener.data.network.SocketRegistry
-import com.alaa.legacyrouteropener.domain.util.GatewayDetector
+import com.alaa.legacyrouteropener.domain.model.AppLanguage
+import com.alaa.legacyrouteropener.domain.model.BannerMessage
+import com.alaa.legacyrouteropener.domain.model.Endpoint
+import com.alaa.legacyrouteropener.domain.model.EndpointParseException
+import com.alaa.legacyrouteropener.domain.model.HardwarePreset
+import com.alaa.legacyrouteropener.domain.model.ProxyState
+import com.alaa.legacyrouteropener.domain.model.ValidationError
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
-import java.io.IOException
-import java.net.BindException
-import java.security.SecureRandom
-import java.util.Locale
 
-class ProxyController internal constructor(
-    context: Context,
-    private val messages: BridgeMessages,
-    private val onRetired: (String, List<Pair<String, String>>) -> Unit = { _, _ -> }
+class ProxyController(
+    private val preferences: PreferencesStore,
+    private val gatewayProvider: GatewayProvider,
+    private val serviceController: ProxyServiceController,
+    private val cookieCleaner: SessionCookieCleaner,
+    private val sessionFactory: ProxySessionFactory,
+    defaultLanguage: AppLanguage,
+    private val message: (AppLanguage, String) -> String
 ) {
-    private val appContext = context.applicationContext
-    private val preferences = context.getSharedPreferences("opener", Context.MODE_PRIVATE)
-    private val gateway = GatewayDetector.detectGatewayIp(context)
-    private val memory = MemoryBudget()
-    private val rng = SecureRandom()
-    private val mutable = MutableStateFlow(ProxyState(
-        routerIp = preferences.getString("target", null) ?: gateway ?: "192.168.1.1",
-        detectedGateway = gateway,
-        presetId = HardwarePreset.find(preferences.getString("preset", null)).id,
-        language = preferences.getString("language", null)
-            ?: if (context.resources.configuration.locales[0].language == "ar") "ar" else "en"
-    ))
-    val state = mutable.asStateFlow()
+    private val initialSavedTarget = preferences.loadTarget()
+    @Volatile private var userEditedAddress = initialSavedTarget != null
 
-    private data class TargetSession(
-        val endpoint: Endpoint,
-        val preset: HardwarePreset,
-        val url: String,
-        val listener: LocalHttpServer,
-        val sockets: SocketRegistry,
-        val proxy: ProxyServer
-    ) {
-        fun close() {
-            sockets.close()
-            listener.close()
+    private val mutableState = MutableStateFlow(
+        ProxyState(
+            routerIp = initialSavedTarget ?: "192.168.1.1",
+            presetId = HardwarePreset.find(preferences.loadPresetId()).id,
+            language = preferences.loadLanguage() ?: defaultLanguage
+        )
+    )
+    val state = mutableState.asStateFlow()
+
+    private val mutableLogs = MutableStateFlow<List<String>>(emptyList())
+    val logs = mutableLogs.asStateFlow()
+
+    private var active: ProxySession? = null
+
+    fun refreshGateway() {
+        val detected = gatewayProvider.detectGatewayIp()
+        mutableState.update { current ->
+            val updatedRouterIp = if (!userEditedAddress && detected != null) detected else current.routerIp
+            current.copy(detectedGateway = detected, routerIp = updatedRouterIp)
         }
     }
 
-    private var active: TargetSession? = null
-
-    fun changeAddress(address: String) = mutable.update {
-        it.copy(routerIp = address.take(1024), validationError = null, banner = null)
+    fun changeAddress(address: String) {
+        userEditedAddress = true
+        mutableState.update {
+            it.copy(routerIp = address.take(1024), validationError = null, banner = null)
+        }
     }
 
-    fun choosePreset(preset: HardwarePreset) = mutable.update {
+    fun choosePreset(preset: HardwarePreset) = mutableState.update {
         it.copy(presetId = preset.id, validationError = null, banner = null)
     }
 
-    fun useDetected() = mutable.update {
-        val address = it.detectedGateway
-        if (address == null) it.copy(banner = "detection_failed")
-        else it.copy(routerIp = address, validationError = null, banner = "detected_saved")
+    fun useDetected() {
+        val detected = mutableState.value.detectedGateway
+        if (detected == null) {
+            mutableState.update { it.copy(banner = BannerMessage.DETECTION_FAILED) }
+        } else {
+            userEditedAddress = true
+            mutableState.update {
+                it.copy(routerIp = detected, validationError = null, banner = BannerMessage.DETECTED_SAVED)
+            }
+        }
     }
 
-    fun chooseLanguage(language: String) {
-        if (language !in setOf("en", "ar")) return
-        mutable.update { it.copy(language = language) }
-        preferences.edit().putString("language", language).apply()
-        active?.let { ProxyForegroundService.start(appContext, it.endpoint.authority) }
+    fun chooseLanguage(language: AppLanguage) {
+        mutableState.update { it.copy(language = language) }
+        preferences.saveLanguage(language)
+        synchronized(this) { active?.endpoint?.authority }?.let(serviceController::start)
     }
 
-    fun clearLogs() = mutable.update { it.copy(logs = emptyList()) }
+    fun clearLogs() {
+        mutableLogs.value = emptyList()
+    }
 
     @Synchronized
     fun open(): String? = applyTarget(start = true, announce = false)
@@ -87,83 +90,94 @@ class ProxyController internal constructor(
     fun resetLogin() {
         val current = active
         if (current == null) {
-            mutable.update { it.copy(banner = "login_fixed", validationError = null) }
+            mutableState.update { it.copy(banner = BannerMessage.LOGIN_FIXED, validationError = null) }
             return
         }
         if (replace(current.endpoint, current.preset) == null) {
-            mutable.update { it.copy(banner = "login_fix_failed") }
+            mutableState.update { it.copy(banner = BannerMessage.LOGIN_FIX_FAILED) }
         } else {
-            mutable.update { it.copy(banner = "login_fixed", validationError = null) }
+            mutableState.update { it.copy(banner = BannerMessage.LOGIN_FIXED, validationError = null) }
         }
     }
 
     private fun applyTarget(start: Boolean, announce: Boolean): String? {
-        val draft = mutable.value
+        val draft = mutableState.value
         val endpoint = try {
             Endpoint.parse(draft.routerIp)
-        } catch (failure: IllegalArgumentException) {
-            mutable.update { it.copy(validationError = failure.message ?: "address_invalid") }
+        } catch (failure: EndpointParseException) {
+            mutableState.update { it.copy(validationError = failure.error) }
+            return null
+        } catch (_: IllegalArgumentException) {
+            mutableState.update { it.copy(validationError = ValidationError.ADDRESS_INVALID) }
             return null
         }
         val preset = HardwarePreset.find(draft.presetId)
         val current = active
-        val address = if (!start) null else if (current?.endpoint == endpoint && current.preset == preset) current.url
-            else replace(endpoint, preset)
+        val address = if (!start) {
+            null
+        } else if (current?.endpoint == endpoint && current.preset == preset) {
+            current.url
+        } else {
+            replace(endpoint, preset)
+        }
         if (start && address == null) {
-            mutable.update { it.copy(banner = "changes_failed") }
+            mutableState.update { it.copy(banner = BannerMessage.CHANGES_FAILED) }
             return null
         }
-        preferences.edit().putString("target", draft.routerIp.trim()).putString("preset", preset.id).apply()
-        mutable.update { it.copy(validationError = null, banner = if (announce) "changes_saved" else null) }
+        userEditedAddress = true
+        preferences.saveTarget(draft.routerIp.trim(), preset.id)
+        mutableState.update {
+            it.copy(validationError = null, banner = if (announce) BannerMessage.CHANGES_SAVED else null)
+        }
         return address
     }
 
     private fun replace(endpoint: Endpoint, preset: HardwarePreset): String? {
-        val hostname = ByteArray(16).also(rng::nextBytes).joinToString("") { byte ->
-            "%02x".format(Locale.ROOT, byte.toInt() and 255)
-        } + ".localhost"
-        lateinit var proxy: ProxyServer
-        val handler = { request: com.alaa.legacyrouteropener.data.model.RouterRequest -> proxy.serve(request) }
-        val listener = try {
-            try {
-                LocalHttpServer(hostname, 8080, memory, handler)
-            } catch (_: BindException) {
-                LocalHttpServer(hostname, 0, memory, handler)
+        var sessionUrl = ""
+        val session = sessionFactory.create(
+            endpoint = endpoint,
+            preset = preset,
+            language = { mutableState.value.language },
+            message = message,
+            telemetry = { value ->
+                mutableState.update { if (it.activeUrl == sessionUrl) it.copy(tlsInfo = value) else it }
+            },
+            log = { line ->
+                if (mutableState.value.activeUrl == sessionUrl) {
+                    mutableLogs.update { (it + line).takeLast(150) }
+                }
             }
-        } catch (_: IOException) {
-            return null
-        }
-        val authority = "$hostname:${listener.port}"
-        val url = "http://$authority/"
-        val sockets = SocketRegistry()
-        val client = DirectRouterHttpClient(endpoint, preset, memory, sockets, listener.port, "http://$authority")
-        proxy = ProxyServer(endpoint, authority, preset, memory, client,
-            language = { mutable.value.language },
-            message = { lang, key -> messages[lang, key] },
-            telemetry = { value -> mutable.update { if (it.activeUrl == url) it.copy(tlsInfo = value) else it } },
-            log = { line -> mutable.update { if (it.activeUrl == url) it.copy(logs = (it.logs + line).takeLast(150)) else it } }
-        )
+        ) ?: return null
+        sessionUrl = session.url
         val old = active
-        active = TargetSession(endpoint, preset, url, listener, sockets, proxy)
-        mutable.update { it.copy(activeUrl = url, activeTarget = endpoint.authority, proxyPort = listener.port,
-            tlsInfo = null, logs = listOf("[PROXY] ${endpoint.authority}")) }
+        active = session
+        mutableLogs.value = listOf("[PROXY] ${endpoint.authority}")
+        mutableState.update {
+            it.copy(
+                activeUrl = sessionUrl,
+                activeTarget = endpoint.authority,
+                tlsInfo = null
+            )
+        }
         old?.let(::retire)
-        listener.start()
-        ProxyForegroundService.start(appContext, endpoint.authority)
-        return url
+        session.start()
+        serviceController.start(endpoint.authority)
+        return sessionUrl
     }
 
     @Synchronized
     fun stop() {
         val current = active
         active = null
-        mutable.update { it.copy(activeUrl = null, activeTarget = null, tlsInfo = null, banner = null) }
-        ProxyForegroundService.stop(appContext)
+        mutableState.update {
+            it.copy(activeUrl = null, activeTarget = null, tlsInfo = null, banner = null)
+        }
+        serviceController.stop()
         current?.let(::retire)
     }
 
-    private fun retire(session: TargetSession) {
+    private fun retire(session: ProxySession) {
         session.close()
-        onRetired(session.url, session.proxy.retiredCookies())
+        cookieCleaner.clear(session.url, session.retiredCookies())
     }
 }
