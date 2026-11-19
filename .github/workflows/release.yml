@@ -1,0 +1,282 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release version (e.g. 1.0.0 or v1.0.0)'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  prepare:
+    name: Prepare Release Metadata
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+      file_version: ${{ steps.meta.outputs.file_version }}
+      tag_name: ${{ steps.meta.outputs.tag_name }}
+      is_prerelease: ${{ steps.meta.outputs.is_prerelease }}
+    steps:
+      - name: Derive and validate release metadata
+        id: meta
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_VERSION: ${{ inputs.version }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            raw="$INPUT_VERSION"
+          else
+            raw="$REF_NAME"
+          fi
+          raw="$(printf '%s' "$raw" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+          version="$(printf '%s' "$raw" | sed 's/^[vV]//')"
+
+          if ! printf '%s' "$version" | grep -Eq '^[0-9]+(\.[0-9]+){1,3}(-[0-9A-Za-z.-]+)?$'; then
+            echo "Invalid version '$raw'. Expected e.g. v1.0.0 or 1.0.0-rc.1." >&2
+            exit 1
+          fi
+
+          core="${version%%-*}"
+          IFS='.' read -r -a parts <<< "$core"
+          while [ "${#parts[@]}" -lt 4 ]; do
+            parts+=("0")
+          done
+          file_version="${parts[0]}.${parts[1]}.${parts[2]}.${parts[3]}"
+          tag_name="v$version"
+          if [[ "$version" == *-* ]]; then
+            is_prerelease="true"
+          else
+            is_prerelease="false"
+          fi
+
+          {
+            echo "version=$version"
+            echo "file_version=$file_version"
+            echo "tag_name=$tag_name"
+            echo "is_prerelease=$is_prerelease"
+          } >> "$GITHUB_OUTPUT"
+
+          echo "version=$version file_version=$file_version tag_name=$tag_name is_prerelease=$is_prerelease"
+
+  build-windows:
+    name: Build Windows Release
+    needs: prepare
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: desktop/go.mod
+          cache: false
+
+      - name: Run go vet
+        working-directory: desktop
+        run: go vet ./...
+
+      - name: Run unit tests
+        working-directory: desktop
+        run: go test -count=1 ./...
+
+      - name: Build Windows executable
+        working-directory: desktop
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: .\build.ps1 -Version $env:VERSION
+
+      - name: Verify executable metadata and --version
+        working-directory: desktop
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+          FILE_VERSION: ${{ needs.prepare.outputs.file_version }}
+        run: |
+          $info = (Get-Item legacy-router-opener.exe).VersionInfo
+          Write-Host ($info | Format-List ProductName, FileDescription, CompanyName, FileVersion, ProductVersion, OriginalFilename, InternalName, LegalCopyright | Out-String)
+          if ($info.FileVersion -ne $env:FILE_VERSION) {
+            throw "FileVersion '$($info.FileVersion)' did not match expected '$env:FILE_VERSION'"
+          }
+          $verOutput = (.\legacy-router-opener.exe --version | Out-String).Trim()
+          if ($LASTEXITCODE -ne 0 -or $verOutput -ne "legacy-router-opener $($env:VERSION)") {
+            throw "Unexpected --version output: '$verOutput' (exit $LASTEXITCODE)"
+          }
+
+      - name: Upload Windows artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-release
+          path: desktop/legacy-router-opener.exe
+          if-no-files-found: error
+
+  build-android:
+    name: Build Android Release
+    needs: prepare
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Install Android SDK components
+        run: |
+          SDKMANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          yes | "$SDKMANAGER" --licenses >/dev/null || true
+          "$SDKMANAGER" 'platforms;android-35' 'build-tools;34.0.0'
+
+      - name: Verify Android versionName matches release version
+        env:
+          EXPECTED_VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          set -euo pipefail
+          actual="$(sed -nE 's/^[[:space:]]*versionName[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/p' android/app/build.gradle.kts | head -n 1)"
+          if [ "$actual" != "$EXPECTED_VERSION" ]; then
+            echo "android/app/build.gradle.kts versionName ('$actual') does not match release version ('$EXPECTED_VERSION')." >&2
+            exit 1
+          fi
+          echo "Verified Android versionName=$actual"
+
+      - name: Verify signing secrets and decode keystore
+        env:
+          RELEASE_KEYSTORE_BASE64: ${{ secrets.RELEASE_KEYSTORE_BASE64 }}
+          RELEASE_STORE_PASSWORD: ${{ secrets.RELEASE_STORE_PASSWORD }}
+          RELEASE_KEY_ALIAS: ${{ secrets.RELEASE_KEY_ALIAS }}
+          RELEASE_KEY_PASSWORD: ${{ secrets.RELEASE_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          for var in RELEASE_KEYSTORE_BASE64 RELEASE_STORE_PASSWORD RELEASE_KEY_ALIAS RELEASE_KEY_PASSWORD; do
+            if [ -z "${!var}" ]; then
+              echo "Required signing secret '$var' is not set." >&2
+              exit 1
+            fi
+          done
+          printf '%s' "$RELEASE_KEYSTORE_BASE64" | tr -d '\r\n' | base64 --decode > "$RUNNER_TEMP/release-keystore.jks"
+          chmod 600 "$RUNNER_TEMP/release-keystore.jks"
+
+      - name: Test, lint, and build signed release APK
+        working-directory: android
+        env:
+          RELEASE_STORE_FILE: ${{ runner.temp }}/release-keystore.jks
+          RELEASE_STORE_PASSWORD: ${{ secrets.RELEASE_STORE_PASSWORD }}
+          RELEASE_KEY_ALIAS: ${{ secrets.RELEASE_KEY_ALIAS }}
+          RELEASE_KEY_PASSWORD: ${{ secrets.RELEASE_KEY_PASSWORD }}
+        run: ./gradlew testDebugUnitTest lintDebug assembleRelease
+
+      - name: Verify signed APK and signing certificate digest
+        run: |
+          set -euo pipefail
+          apk="android/app/build/outputs/apk/release/app-release.apk"
+          if [ ! -f "$apk" ]; then
+            echo "Expected signed release APK at $apk, but it was not produced." >&2
+            exit 1
+          fi
+          signer="$ANDROID_HOME/build-tools/34.0.0/apksigner"
+          verify_out="$("$signer" verify --verbose --print-certs "$apk")"
+          printf '%s\n' "$verify_out"
+
+          expected_sha256="28c3e864cf3aa9005bbe38bff68a2b152e256d18940e2189d7bc7987b5a26fb4"
+          actual_sha256="$(printf '%s\n' "$verify_out" | sed -nE 's/.*certificate SHA-256 digest:[[:space:]]*([0-9a-fA-F]+).*/\1/p' | head -n 1 | tr '[:upper:]' '[:lower:]')"
+          if [ "$actual_sha256" != "$expected_sha256" ]; then
+            echo "Signing certificate SHA-256 mismatch: expected $expected_sha256, got '$actual_sha256'" >&2
+            exit 1
+          fi
+
+          cp "$apk" "$RUNNER_TEMP/legacy-router-opener.apk"
+          bytes="$(stat -c%s "$RUNNER_TEMP/legacy-router-opener.apk")"
+          echo "Verified legacy-router-opener.apk ($bytes bytes, cert SHA-256: $actual_sha256)"
+
+      - name: Upload Android artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-release
+          path: ${{ runner.temp }}/legacy-router-opener.apk
+          if-no-files-found: error
+
+      - name: Clean up decoded keystore
+        if: always()
+        run: rm -f "$RUNNER_TEMP/release-keystore.jks"
+
+  publish-release:
+    name: Publish GitHub Release
+    needs: [prepare, build-windows, build-android]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download Windows artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: windows-release
+          path: ${{ runner.temp }}/release-assets
+
+      - name: Download Android artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: android-release
+          path: ${{ runner.temp }}/release-assets
+
+      - name: Generate and verify combined SHA256SUMS.txt
+        working-directory: ${{ runner.temp }}/release-assets
+        run: |
+          set -euo pipefail
+          sha256sum legacy-router-opener.exe legacy-router-opener.apk > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+          sha256sum -c SHA256SUMS.txt
+
+      - name: Publish GitHub Release
+        working-directory: ${{ runner.temp }}/release-assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG_NAME: ${{ needs.prepare.outputs.tag_name }}
+          IS_PRERELEASE: ${{ needs.prepare.outputs.is_prerelease }}
+          EVENT_NAME: ${{ github.event_name }}
+          TARGET_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          if gh release view "$TAG_NAME" >/dev/null 2>&1; then
+            gh release upload "$TAG_NAME" \
+              legacy-router-opener.exe \
+              legacy-router-opener.apk \
+              SHA256SUMS.txt \
+              --clobber
+            gh release edit "$TAG_NAME" "--prerelease=$IS_PRERELEASE"
+          else
+            args=(
+              release create "$TAG_NAME"
+              legacy-router-opener.exe
+              legacy-router-opener.apk
+              SHA256SUMS.txt
+              --title "$TAG_NAME"
+              --generate-notes
+            )
+            if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+              args+=(--target "$TARGET_SHA")
+            else
+              args+=(--verify-tag)
+            fi
+            if [ "$IS_PRERELEASE" = "true" ]; then
+              args+=(--prerelease)
+            fi
+            gh "${args[@]}"
+          fi
