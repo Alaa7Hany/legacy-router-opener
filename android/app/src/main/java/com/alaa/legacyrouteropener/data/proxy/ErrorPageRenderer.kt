@@ -13,7 +13,7 @@ internal class ErrorPageRenderer(private val message: (AppLanguage, String) -> S
             <style>
             :root{color-scheme:light dark;--bg:#f4f3ef;--card:#fff;--border:#d6d3cd;--text:#1c1917;--link:#1d4ed8}
             @media(prefers-color-scheme:dark){:root{--bg:#18181b;--card:#222226;--border:#3f3f46;--text:#f4f4f5;--link:#93c5fd}}
-            body{margin:0;padding:24px 16px;min-height:100dvh;box-sizing:border-box;display:grid;place-items:center;
+            body{margin:0;padding:24px 16px;min-height:100vh;min-height:100dvh;box-sizing:border-box;display:grid;place-items:center;
             background:var(--bg);color:var(--text);font:16px/1.5 system-ui,sans-serif}
             main{width:100%;max-width:420px;box-sizing:border-box;border:1px solid var(--border);
             border-radius:12px;padding:24px;background:var(--card)}

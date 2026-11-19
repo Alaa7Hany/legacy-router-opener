@@ -70,7 +70,11 @@
     "expanded": "Expanded",
     "collapsed": "Collapsed",
     "router_page": "Router page",
-    "reload": "Reload"
+    "reload": "Reload",
+    "auth_title": "Sign in",
+    "auth_username": "Username",
+    "auth_password": "Password",
+    "auth_sign_in": "Sign in"
   },
   "ar": {
     "app_title": "فاتح صفحات الراوتر",
@@ -143,6 +147,10 @@
     "expanded": "موسّع",
     "collapsed": "مطوي",
     "router_page": "صفحة الراوتر",
-    "reload": "إعادة التحميل"
+    "reload": "إعادة التحميل",
+    "auth_title": "تسجيل الدخول",
+    "auth_username": "اسم المستخدم",
+    "auth_password": "كلمة المرور",
+    "auth_sign_in": "تسجيل الدخول"
   }
 }

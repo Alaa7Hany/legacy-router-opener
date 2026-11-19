@@ -54,15 +54,13 @@ class LegacyTlsTest {
         }
     }
 
-    @Test fun closeDelimitedTlsRequiresCloseNotify() {
-        exercise(ProtocolVersion.TLSv12, CipherSuite.TLS_RSA_WITH_AES_128_CBC_SHA,
-            "", "OK", false) { client, request ->
-            assertThrows(IOException::class.java) { client.send(request, "") }
-        }
-        exercise(ProtocolVersion.TLSv12, CipherSuite.TLS_RSA_WITH_AES_128_CBC_SHA,
-            "", "OK", true) { client, request ->
-            client.send(request, "").response.use {
-                assertEquals("OK", it.body.inputStream().reader().readText())
+    @Test fun closeDelimitedTlsSucceedsWithAndWithoutCloseNotify() {
+        for (closeNotify in listOf(false, true)) {
+            exercise(ProtocolVersion.TLSv12, CipherSuite.TLS_RSA_WITH_AES_128_CBC_SHA,
+                "", "OK", closeNotify) { client, request ->
+                client.send(request, "").response.use {
+                    assertEquals("OK", it.body.inputStream().reader().readText())
+                }
             }
         }
     }

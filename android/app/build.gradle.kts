@@ -4,6 +4,8 @@ import org.objectweb.asm.ClassWriter
 import org.objectweb.asm.Label
 import org.objectweb.asm.MethodVisitor
 import org.objectweb.asm.Opcodes.*
+import java.io.File
+import java.util.Properties
 import java.util.zip.ZipEntry
 import java.util.zip.ZipFile
 import java.util.zip.ZipOutputStream
@@ -89,20 +91,57 @@ fun restoreLegacyRsaRc4Mappings(bytes: ByteArray): ByteArray {
     return writer.toByteArray()
 }
 
+val localProperties = Properties().apply {
+    val file = rootProject.file("local.properties")
+    if (file.isFile) file.inputStream().use(::load)
+}
+
+fun releaseSigningProperty(name: String): String? =
+    System.getenv(name)?.takeIf { it.isNotBlank() }
+        ?: localProperties.getProperty(name)?.takeIf { it.isNotBlank() }
+
 android {
     namespace = "com.alaa.legacyrouteropener"
     compileSdk = 35
 
     defaultConfig {
-        applicationId = "com.alaa.legacyrouteropener"
+        applicationId = "com.lol7harrr.legacyrouteropener"
         minSdk = 26
         targetSdk = 35
         versionCode = 1
         versionName = "1.0.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+        resourceConfigurations += listOf("en", "ar")
         vectorDrawables {
             useSupportLibrary = true
+        }
+    }
+
+    dependenciesInfo {
+        includeInApk = false
+        includeInBundle = false
+    }
+
+    val releaseStorePath = releaseSigningProperty("RELEASE_STORE_FILE")
+    val releaseStorePassword = releaseSigningProperty("RELEASE_STORE_PASSWORD")
+    val releaseKeyAlias = releaseSigningProperty("RELEASE_KEY_ALIAS")
+    val releaseKeyPassword = releaseSigningProperty("RELEASE_KEY_PASSWORD")
+    val releaseStoreFile = releaseStorePath?.let { path ->
+        val raw = File(path)
+        if (raw.isAbsolute) raw else rootProject.file(path)
+    }
+    val hasReleaseSigning = releaseStoreFile != null && releaseStoreFile.isFile &&
+        releaseStorePassword != null && releaseKeyAlias != null && releaseKeyPassword != null
+
+    if (hasReleaseSigning) {
+        signingConfigs {
+            create("release") {
+                storeFile = releaseStoreFile
+                storePassword = releaseStorePassword
+                keyAlias = releaseKeyAlias
+                keyPassword = releaseKeyPassword
+            }
         }
     }
 
@@ -110,6 +149,10 @@ android {
         release {
             isMinifyEnabled = true
             isShrinkResources = true
+            vcsInfo.include = false
+            if (hasReleaseSigning) {
+                signingConfig = signingConfigs.getByName("release")
+            }
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
@@ -137,7 +180,12 @@ android {
                 "/META-INF/{AL2.0,LGPL2.1}",
                 "META-INF/versions/9/OSGI-INF/MANIFEST.MF",
                 "META-INF/INDEX.LIST",
-                "META-INF/io.netty.versions.properties"
+                "META-INF/io.netty.versions.properties",
+                "META-INF/*.version",
+                "org/bouncycastle/pqc/**",
+                "org/bouncycastle/x509/CertPathReviewerMessages*.properties",
+                "DebugProbesKt.bin",
+                "kotlin-tooling-metadata.json"
             )
         }
     }

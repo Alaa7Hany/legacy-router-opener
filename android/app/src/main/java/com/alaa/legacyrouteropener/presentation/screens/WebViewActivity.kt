@@ -8,6 +8,7 @@ import android.os.Bundle
 import android.provider.Browser
 import android.view.ViewGroup
 import android.webkit.CookieManager
+import android.webkit.HttpAuthHandler
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
@@ -19,9 +20,15 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.style.TextDirection
+import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.lifecycleScope
@@ -37,7 +44,10 @@ import kotlinx.coroutines.launch
 import java.io.ByteArrayInputStream
 
 class WebViewActivity : ComponentActivity() {
+    private data class PendingHttpAuth(val handler: HttpAuthHandler, val subtitle: String)
+
     private var webView: WebView? = null
+    private var pendingAuth by mutableStateOf<PendingHttpAuth?>(null)
 
     @OptIn(ExperimentalMaterial3Api::class)
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -50,10 +60,12 @@ class WebViewActivity : ComponentActivity() {
             return
         }
         val origin = Uri.parse(url)
+        val activeTarget = controller.state.value.activeTarget ?: origin.host.orEmpty()
         enableEdgeToEdge()
         WebView.setWebContentsDebuggingEnabled(BuildConfig.DEBUG)
         lifecycleScope.launch {
             controller.state.first { it.activeUrl != url }
+            cancelPendingAuth()
             webView?.stopLoading()
             webView?.clearHistory()
             webView?.clearFormData()
@@ -72,6 +84,25 @@ class WebViewActivity : ComponentActivity() {
                 var noBrowser by remember { mutableStateOf(false) }
                 fun msg(key: String) = container.messages[language, key]
                 BackHandler(canGoBack) { webView?.goBack() }
+
+                pendingAuth?.let { challenge ->
+                    HttpAuthDialog(
+                        title = msg("auth_title"),
+                        subtitle = challenge.subtitle,
+                        usernameLabel = msg("auth_username"),
+                        passwordLabel = msg("auth_password"),
+                        confirmLabel = msg("auth_sign_in"),
+                        cancelLabel = msg("cancel"),
+                        onConfirm = { username, password ->
+                            pendingAuth = null
+                            challenge.handler.proceed(username, password)
+                        },
+                        onDismiss = {
+                            pendingAuth = null
+                            challenge.handler.cancel()
+                        }
+                    )
+                }
 
                 Scaffold(
                     containerColor = colors.background,
@@ -153,6 +184,24 @@ class WebViewActivity : ComponentActivity() {
                                                 ByteArrayInputStream(ByteArray(0)))
                                         }
 
+                                        override fun onReceivedHttpAuthRequest(
+                                            view: WebView,
+                                            handler: HttpAuthHandler,
+                                            host: String,
+                                            realm: String?
+                                        ) {
+                                            if (!host.equals(origin.host, ignoreCase = true)) {
+                                                handler.cancel()
+                                                return
+                                            }
+                                            cancelPendingAuth()
+                                            val subtitle = listOfNotNull(
+                                                activeTarget.takeIf { it.isNotBlank() },
+                                                realm?.takeIf { it.isNotBlank() }
+                                            ).joinToString(" · ")
+                                            pendingAuth = PendingHttpAuth(handler, subtitle)
+                                        }
+
                                         override fun doUpdateVisitedHistory(view: WebView, url: String?, isReload: Boolean) {
                                             canGoBack = view.canGoBack()
                                         }
@@ -162,6 +211,7 @@ class WebViewActivity : ComponentActivity() {
                                 }
                             },
                             onRelease = { view ->
+                                cancelPendingAuth()
                                 view.stopLoading()
                                 view.destroy()
                                 if (webView === view) webView = null
@@ -183,10 +233,71 @@ class WebViewActivity : ComponentActivity() {
         super.onPause()
     }
 
+    override fun onDestroy() {
+        cancelPendingAuth()
+        super.onDestroy()
+    }
+
+    private fun cancelPendingAuth() {
+        pendingAuth?.handler?.cancel()
+        pendingAuth = null
+    }
+
     private fun isOrigin(uri: Uri, origin: Uri) =
         uri.scheme == origin.scheme && uri.host == origin.host && uri.port == origin.port
 
     companion object {
         const val URL = "URL"
     }
+}
+
+@Composable
+private fun HttpAuthDialog(
+    title: String,
+    subtitle: String,
+    usernameLabel: String,
+    passwordLabel: String,
+    confirmLabel: String,
+    cancelLabel: String,
+    onConfirm: (String, String) -> Unit,
+    onDismiss: () -> Unit
+) {
+    var username by remember { mutableStateOf("") }
+    var password by remember { mutableStateOf("") }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(title) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                if (subtitle.isNotEmpty()) {
+                    Text(subtitle, style = MaterialTheme.typography.bodySmall, color = LocalBridgeColors.current.muted)
+                }
+                OutlinedTextField(
+                    value = username,
+                    onValueChange = { username = it },
+                    label = { Text(usernameLabel) },
+                    singleLine = true,
+                    textStyle = MaterialTheme.typography.bodyMedium.copy(textDirection = TextDirection.Ltr),
+                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Next),
+                    modifier = Modifier.fillMaxWidth()
+                )
+                OutlinedTextField(
+                    value = password,
+                    onValueChange = { password = it },
+                    label = { Text(passwordLabel) },
+                    singleLine = true,
+                    visualTransformation = PasswordVisualTransformation(),
+                    textStyle = MaterialTheme.typography.bodyMedium.copy(textDirection = TextDirection.Ltr),
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password, imeAction = ImeAction.Done),
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = { onConfirm(username, password) }) { Text(confirmLabel) }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text(cancelLabel) }
+        }
+    )
 }

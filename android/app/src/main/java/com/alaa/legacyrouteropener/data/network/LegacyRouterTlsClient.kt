@@ -49,7 +49,7 @@ internal class LegacyRouterTlsClient(
     }
 
     override fun shouldUseExtendedMasterSecret() = profile == TlsProfile.MODERN
-    override fun requiresCloseNotify() = profile == TlsProfile.MODERN
+    override fun requiresCloseNotify() = false
     override fun getRenegotiationPolicy() =
         if (profile == TlsProfile.MODERN) RenegotiationPolicy.DENY else RenegotiationPolicy.ACCEPT
 

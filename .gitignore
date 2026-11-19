@@ -18,6 +18,7 @@ desktop.ini
 # IDE / Editor folders
 .vscode/
 .idea/
+.kotlin/
 
 # Android / Gradle
 .gradle/
@@ -32,6 +33,9 @@ android/.idea/
 *.apk
 *.aab
 *.ap_
+*.jks
+*.keystore
+*.p12
 *.exe
 *.syso
 captures/

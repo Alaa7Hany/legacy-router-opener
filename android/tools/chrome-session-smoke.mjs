@@ -10,7 +10,7 @@ const [serial, hostChromeExecutable] = process.argv.slice(2);
 if (!serial || !hostChromeExecutable) {
     throw new Error('Usage: node android/tools/chrome-session-smoke.mjs <adb-serial> <host-chrome-executable>');
 }
-const app = 'com.alaa.legacyrouteropener';
+const app = 'com.lol7harrr.legacyrouteropener';
 const runId = Date.now().toString(36);
 const fixtureA = 'LRO fixture A ' + runId;
 const fixtureB = 'LRO fixture B ' + runId;
@@ -21,7 +21,7 @@ function adb(...args) {
 }
 
 function launchOpener() {
-    adb('shell', 'am', 'start', '-f', '0x04000000', '-n', app + '/.presentation.MainActivity');
+    adb('shell', 'am', 'start', '-f', '0x04000000', '-n', app + '/com.alaa.legacyrouteropener.presentation.MainActivity');
 }
 
 async function tree() {
