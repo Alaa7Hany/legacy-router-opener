@@ -108,7 +108,7 @@ internal object HttpWireCodec {
             when {
                 headers.containsKey("transfer-encoding") -> {
                     while (true) {
-                        val sizeText = line(input, strict = true).substringBefore(';')
+                        val sizeText = line(input, strict = true).substringBefore(';').trim()
                         if (!hexSize.matches(sizeText)) throw HttpError(400)
                         val size = sizeText.toLongOrNull(16) ?: throw BodyTooLarge()
                         if (size == 0L) {
@@ -174,12 +174,17 @@ internal object HttpWireCodec {
         }
     }
 
-    fun writeHead(output: OutputStream, start: String, headers: Headers) {
+    fun writeHead(output: OutputStream, start: String, headers: Headers, canonicalNames: Boolean = false) {
         output.write("$start\r\n".toByteArray(Charsets.ISO_8859_1))
         headers.forEach { (name, values) ->
-            values.forEach { value -> output.write("$name: $value\r\n".toByteArray(Charsets.ISO_8859_1)) }
+            val wireName = if (canonicalNames) canonicalHeaderName(name) else name
+            values.forEach { value -> output.write("$wireName: $value\r\n".toByteArray(Charsets.ISO_8859_1)) }
         }
         output.write(byteArrayOf(13, 10))
+    }
+
+    private fun canonicalHeaderName(name: String): String = name.split('-').joinToString("-") { segment ->
+        segment.replaceFirstChar { ch -> if (ch.isLowerCase()) ch.uppercase(Locale.ROOT) else ch.toString() }
     }
 
     fun forwardedHeaders(headers: Headers): Headers {

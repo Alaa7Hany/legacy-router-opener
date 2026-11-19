@@ -22,6 +22,7 @@ class ProxyController internal constructor(
     private val messages: BridgeMessages,
     private val onRetired: (String, List<Pair<String, String>>) -> Unit = { _, _ -> }
 ) {
+    private val appContext = context.applicationContext
     private val preferences = context.getSharedPreferences("opener", Context.MODE_PRIVATE)
     private val gateway = GatewayDetector.detectGatewayIp(context)
     private val memory = MemoryBudget()
@@ -69,6 +70,7 @@ class ProxyController internal constructor(
         if (language !in setOf("en", "ar")) return
         mutable.update { it.copy(language = language) }
         preferences.edit().putString("language", language).apply()
+        active?.let { ProxyForegroundService.start(appContext, it.endpoint.authority) }
     }
 
     fun clearLogs() = mutable.update { it.copy(logs = emptyList()) }
@@ -147,6 +149,7 @@ class ProxyController internal constructor(
             tlsInfo = null, logs = listOf("[PROXY] ${endpoint.authority}")) }
         old?.let(::retire)
         listener.start()
+        ProxyForegroundService.start(appContext, endpoint.authority)
         return url
     }
 
@@ -155,6 +158,7 @@ class ProxyController internal constructor(
         val current = active
         active = null
         mutable.update { it.copy(activeUrl = null, activeTarget = null, tlsInfo = null, banner = null) }
+        ProxyForegroundService.stop(appContext)
         current?.let(::retire)
     }
 

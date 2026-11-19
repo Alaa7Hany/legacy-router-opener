@@ -9,7 +9,6 @@ import com.alaa.legacyrouteropener.data.model.redactQuery
 import com.alaa.legacyrouteropener.data.network.*
 import com.alaa.legacyrouteropener.data.repository.SessionCookieJar
 import java.io.IOException
-import java.net.URI
 
 internal class ProxyServer(
     private val endpoint: Endpoint,
@@ -34,7 +33,7 @@ internal class ProxyServer(
         log("[${request.method}] $safePath")
         val browserCookies = request.headers["cookie"].orEmpty()
         val cacheableRequest = request.method == "GET" && ResponseTransformer.isStatic(request.path) &&
-            request.headers.keys.none { it in requestCacheExclusions } && browserCookies.isEmpty()
+            request.headers.keys.none { it in requestCacheExclusions }
         return try {
             if (cacheableRequest) {
                 cache.get(request.path, budget)?.let {
@@ -42,16 +41,15 @@ internal class ProxyServer(
                     return it
                 }
             }
-            val uri = URI.create(endpoint.url + request.path)
-            val result = upstream.send(request, jar.merge(uri, browserCookies))
+            val result = upstream.send(request, jar.merge(browserCookies))
             telemetry(result.tlsInfo)
             result.response.use { response ->
                 val used = result.endpoint
                 val responseHeaders = HttpWireCodec.forwardedHeaders(response.headers).toMutableMap()
                 val cookies = responseHeaders["set-cookie"].orEmpty()
-                jar.save(URI.create(used.url + request.path), cookies)
                 if (cookies.isNotEmpty()) {
-                    val cleaned = cookies.map(ResponseTransformer::cleanCookie)
+                    jar.save(cookies)
+                    val cleaned = cookies.map(ResponseTransformer::cleanCookie).filter(String::isNotEmpty)
                     recordBrowserCookies(request.path, cleaned)
                     responseHeaders["set-cookie"] = cleaned
                 }
@@ -79,8 +77,7 @@ internal class ProxyServer(
                     }
                     val forbidden = response.headers.keys.any { it in responseCacheExclusions } ||
                         directives(response.headers).any { it in uncacheableDirectives }
-                    val isPublicAsset = cacheableRequest && response.status == 200 && !forbidden &&
-                        cookies.isEmpty() && jar.merge(uri, emptyList()).isEmpty()
+                    val isPublicAsset = cacheableRequest && response.status == 200 && !forbidden && cookies.isEmpty()
                     if (decode || transformed !== decoded) {
                         responseHeaders.keys.removeAll(setOf("etag", "content-md5", "digest", "content-range", "accept-ranges"))
                     }
@@ -195,7 +192,14 @@ internal class ProxyServer(
             "if-none-match", "if-modified-since", "if-match", "if-unmodified-since")
         val responseCacheExclusions = setOf("vary", "www-authenticate", "content-range")
         val uncacheableDirectives = setOf("no-store", "no-cache", "private")
-        val stripResponseHeaders = setOf("strict-transport-security", "alt-svc", "clear-site-data",
-            "access-control-allow-origin", "access-control-allow-credentials")
+        val stripResponseHeaders = setOf(
+            "strict-transport-security", "alt-svc", "clear-site-data",
+            "access-control-allow-origin", "access-control-allow-credentials",
+            "x-frame-options",
+            "content-security-policy", "content-security-policy-report-only",
+            "x-content-security-policy", "x-webkit-csp",
+            "cross-origin-embedder-policy", "cross-origin-opener-policy",
+            "cross-origin-resource-policy", "x-content-type-options"
+        )
     }
 }

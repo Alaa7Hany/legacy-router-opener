@@ -105,22 +105,36 @@ class WebViewActivity : ComponentActivity() {
                                     @Suppress("SetJavaScriptEnabled")
                                     settings.javaScriptEnabled = true
                                     settings.domStorageEnabled = true
+                                    settings.useWideViewPort = true
+                                    settings.loadWithOverviewMode = true
+                                    settings.builtInZoomControls = true
+                                    settings.displayZoomControls = false
                                     settings.allowFileAccess = false
                                     settings.allowContentAccess = false
                                     settings.mixedContentMode = android.webkit.WebSettings.MIXED_CONTENT_NEVER_ALLOW
                                     settings.setSupportMultipleWindows(false)
-                                    android.webkit.CookieManager.getInstance().setAcceptThirdPartyCookies(this, false)
+                                    val cookieManager = android.webkit.CookieManager.getInstance()
+                                    cookieManager.setAcceptCookie(true)
+                                    cookieManager.setAcceptThirdPartyCookies(this, false)
                                     webChromeClient = object : WebChromeClient() {
                                         override fun onProgressChanged(view: WebView, newProgress: Int) {
                                             progress = newProgress
                                         }
                                     }
                                     webViewClient = object : WebViewClient() {
-                                        override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest) =
-                                            !isOrigin(request.url, origin)
+                                        override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
+                                            val uri = request.url
+                                            if (isOrigin(uri, origin) || uri.scheme == "javascript" || uri.toString() == "about:blank") {
+                                                return false
+                                            }
+                                            return true
+                                        }
 
                                         override fun shouldInterceptRequest(view: WebView, request: WebResourceRequest): WebResourceResponse? {
-                                            if (isOrigin(request.url, origin) || request.url.scheme in setOf("data", "blob")) return null
+                                            val uri = request.url
+                                            if (isOrigin(uri, origin) || uri.scheme in setOf("data", "blob") || uri.toString() == "about:blank") {
+                                                return null
+                                            }
                                             return WebResourceResponse("text/plain", "utf-8", 403, "Forbidden", emptyMap(),
                                                 ByteArrayInputStream(ByteArray(0)))
                                         }

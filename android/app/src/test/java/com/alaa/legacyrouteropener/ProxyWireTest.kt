@@ -5,6 +5,7 @@ import com.alaa.legacyrouteropener.data.model.HardwarePreset
 import com.alaa.legacyrouteropener.data.model.RouterRequest
 import com.alaa.legacyrouteropener.data.model.RouterResponse
 import com.alaa.legacyrouteropener.data.network.*
+import com.alaa.legacyrouteropener.data.repository.SessionCookieJar
 import com.alaa.legacyrouteropener.domain.server.LocalHttpServer
 import com.alaa.legacyrouteropener.domain.server.ResponseTransformer
 import org.junit.Assert.*
@@ -183,6 +184,62 @@ class ProxyWireTest {
             }
             assertEquals(0, budget.used)
         }
+    }
+
+    @Test fun keepAliveRedirectWithoutContentLengthDoesNotHang() {
+        val budget = MemoryBudget()
+        SocketRegistry().use { sockets ->
+            ServerSocket(0, 4, InetAddress.getByName("127.0.0.1")).use { upstream ->
+                val done = CountDownLatch(1)
+                thread(isDaemon = true) {
+                    upstream.accept().use { socket ->
+                        val head = HttpWireCodec.readRequest(socket.getInputStream())
+                        HttpWireCodec.body(socket.getInputStream(), head.headers, budget, false).close()
+                        val reply = "HTTP/1.1 302 Found\r\n" +
+                            "Connection: Keep-Alive\r\n" +
+                            "Location: /html/content.asp\r\n" +
+                            "Set-Cookie: SessionID_R3=tok123; Expires=Sun, 02 Jan 2000 22:00:00 GMT\r\n\r\n"
+                        socket.getOutputStream().write(reply.toByteArray(Charsets.ISO_8859_1))
+                        socket.getOutputStream().flush()
+                        // Hold socket open like Huawei Keep-Alive servers do.
+                        done.await(5, TimeUnit.SECONDS)
+                    }
+                }
+                val client = DirectRouterHttpClient(
+                    Endpoint.parse("http://127.0.0.1:${upstream.localPort}"),
+                    HardwarePreset.find("auto"), budget, sockets, 8080, "http://test.localhost:8080"
+                )
+                WireBody(budget).use { reqBody ->
+                    reqBody.write("Username=admin".toByteArray())
+                    val started = System.nanoTime()
+                    client.send(RouterRequest("POST", "/index/login.cgi", emptyMap(), reqBody), "").response.use { res ->
+                        val elapsedMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - started)
+                        assertEquals(302, res.status)
+                        assertEquals("/html/content.asp", res.headers.first("location"))
+                        assertTrue("Expected immediate redirect, took ${elapsedMs}ms", elapsedMs < 3000)
+                    }
+                }
+                done.countDown()
+            }
+        }
+        assertEquals(0, budget.used)
+    }
+
+    @Test fun legacyRouterCookiesSurviveSubpathsAndOldClock() {
+        val jar = SessionCookieJar(seedHuawei = true)
+        jar.save(listOf("SessionID_R3=abc123; Expires=Sun, 02 Jan 2000 22:00:00 GMT; Path=/index; Secure; HttpOnly"))
+        val merged = jar.merge(emptyList())
+        assertTrue(merged.contains("SessionID_R3=abc123"))
+        assertTrue(merged.contains("FirstMenu=Admin_0"))
+
+        val cleaned = ResponseTransformer.cleanCookie(
+            "SessionID_R3=abc123; Expires=Sun, 02 Jan 2000 22:00:00 GMT; Path=/index; Secure; HttpOnly; SameSite=None"
+        )
+        assertTrue(cleaned.contains("SessionID_R3=abc123"))
+        assertTrue(cleaned.contains("Path=/"))
+        assertTrue(cleaned.contains("SameSite=Lax"))
+        assertFalse(cleaned.contains("Secure", ignoreCase = true))
+        assertFalse(cleaned.contains("Expires=", ignoreCase = true))
     }
 
     private fun send(port: Int, wire: String): String = Socket("127.0.0.1", port).use {

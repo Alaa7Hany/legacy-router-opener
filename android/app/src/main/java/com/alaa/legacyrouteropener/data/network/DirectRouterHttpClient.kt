@@ -7,6 +7,7 @@ import com.alaa.legacyrouteropener.data.model.RouterResponse
 import com.alaa.legacyrouteropener.data.model.TlsInfo
 import org.bouncycastle.tls.TlsClientProtocol
 import java.io.BufferedInputStream
+import java.io.BufferedOutputStream
 import java.io.FilterInputStream
 import java.io.IOException
 import java.io.InputStream
@@ -48,6 +49,7 @@ internal class DirectRouterHttpClient(
                 it.isAnyLocalAddress || it.isMulticastAddress || (it.isLoopbackAddress && target.port == blockedPort)
             }
             if (dns.isEmpty()) throw IOException("Target resolves to a blocked address")
+            var retriedCached = false
             while (attempts.isNotEmpty() && !sockets.closed) {
                 val attempt = attempts.removeFirst()
                 try {
@@ -55,6 +57,14 @@ internal class DirectRouterHttpClient(
                 } catch (failure: BeforeWrite) {
                     last = failure.failure
                     val endpoint = attempt.endpoint
+                    if (attempt == cached && !retriedCached &&
+                        (last is SocketException || last is java.io.EOFException)
+                    ) {
+                        retriedCached = true
+                        Thread.sleep(150)
+                        attempts.addFirst(attempt)
+                        continue
+                    }
                     val implicitHttp = !target.explicitScheme && !target.explicitPort &&
                         (last is java.net.ConnectException || last is SocketException || last is java.io.EOFException)
                     val customHttp = !target.explicitScheme && target.explicitPort && failure.plaintext
@@ -96,18 +106,27 @@ internal class DirectRouterHttpClient(
                 }
                 protocol to client.info()
             }
-            val output = tls?.first?.outputStream ?: rawOutput
+            val output = BufferedOutputStream(tls?.first?.outputStream ?: rawOutput, 8192)
             val input = BufferedInputStream(tls?.first?.inputStream ?: rawInput)
             val headers = HttpWireCodec.forwardedHeaders(request.headers).toMutableMap()
-            headers.remove("host")
-            headers.remove("cookie")
+            headers.keys.removeAll(strippedUpstreamHeaders)
             headers["host"] = listOf(endpoint.authority)
             headers["connection"] = listOf("close")
             headers["accept-encoding"] = listOf("identity")
-            if (headers.first("origin") == origin) headers["origin"] = listOf(endpoint.url)
-            headers.first("referer")?.takeIf { it.startsWith("$origin/") }?.let {
-                headers["referer"] = listOf(endpoint.url + it.removePrefix(origin))
+            val incomingOrigin = headers.first("origin")
+            if (incomingOrigin == null || incomingOrigin.equals(origin, ignoreCase = true)) {
+                headers["origin"] = listOf(endpoint.url)
             }
+            val incomingReferer = headers.first("referer")
+            headers["referer"] = listOf(
+                when {
+                    incomingReferer == null -> "${endpoint.url}/"
+                    incomingReferer.equals(origin, ignoreCase = true) -> "${endpoint.url}/"
+                    incomingReferer.startsWith("$origin/", ignoreCase = true) ->
+                        endpoint.url + incomingReferer.substring(origin.length)
+                    else -> incomingReferer
+                }
+            )
             if (cookies.isNotEmpty()) headers["cookie"] = listOf(cookies)
             if (request.body.size > 0 || request.method in setOf("POST", "PUT", "PATCH") ||
                 request.headers.containsKey("content-length") || request.headers.containsKey("transfer-encoding")) {
@@ -116,7 +135,7 @@ internal class DirectRouterHttpClient(
             SocketDeadline(socket, 15_000).use { deadline ->
                 deadline.check()
                 startedWrite = true
-                HttpWireCodec.writeHead(output, "${request.method} ${request.path} HTTP/1.1", headers)
+                HttpWireCodec.writeHead(output, "${request.method} ${request.path} HTTP/1.1", headers, canonicalNames = true)
                 request.body.writeTo(output)
                 output.flush()
             }
@@ -125,7 +144,12 @@ internal class DirectRouterHttpClient(
                 it.check()
                 HttpWireCodec.readResponse(input)
             }
-            val body = if (HttpWireCodec.hasBody(request.method, head.status)) {
+            val keepAliveEmptyRedirect = head.status in setOf(301, 302, 303, 307, 308) &&
+                head.headers.first("location") != null &&
+                head.headers.first("content-length") == null &&
+                !head.headers.containsKey("transfer-encoding") &&
+                head.headers.first("connection")?.equals("close", ignoreCase = true) != true
+            val body = if (HttpWireCodec.hasBody(request.method, head.status) && !keepAliveEmptyRedirect) {
                 SocketDeadline(socket, 30_000).use {
                     it.check()
                     HttpWireCodec.body(input, head.headers, budget, closeDelimited = true)
@@ -140,6 +164,12 @@ internal class DirectRouterHttpClient(
             sockets.forget(socket)
             runCatching { socket.close() }
         }
+    }
+
+    private companion object {
+        val strippedUpstreamHeaders = setOf(
+            "host", "cookie", "if-modified-since", "if-none-match", "upgrade-insecure-requests"
+        )
     }
 }
 

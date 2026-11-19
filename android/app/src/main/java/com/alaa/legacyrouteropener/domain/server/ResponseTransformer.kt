@@ -48,7 +48,7 @@ internal class ResponseTransformer(private val endpoint: Endpoint, private val a
         val charsetName = charsetParam.find(mimeType)?.groupValues?.get(1) ?: "UTF-8"
         if (nul && !charsetName.startsWith("UTF-16", true) && !charsetName.startsWith("UTF-32", true)) return input
         if (input.size > MAX_TEXT) throw BodyTooLarge()
-        val charset = Charset.forName(charsetName)
+        val charset = runCatching { Charset.forName(charsetName) }.getOrDefault(Charsets.UTF_8)
         val charCapacity = kotlin.math.ceil(input.size.toDouble() * charset.newDecoder().maxCharsPerByte()).toInt()
         budget.reserve(charCapacity * Char.SIZE_BYTES).use {
             val chars = CharArray(charCapacity)
@@ -106,14 +106,16 @@ internal class ResponseTransformer(private val endpoint: Endpoint, private val a
             "application/x-javascript", "image/svg+xml", "application/xhtml+xml")
         private val extensions = mapOf(
             "css" to "text/css", "js" to "application/javascript", "mjs" to "application/javascript",
+            "res" to "application/javascript",
             "html" to "text/html", "htm" to "text/html", "shtml" to "text/html",
+            "asp" to "text/html", "cgi" to "text/html",
             "json" to "application/json", "xml" to "application/xml", "txt" to "text/plain",
             "png" to "image/png", "jpg" to "image/jpeg", "jpeg" to "image/jpeg", "ico" to "image/x-icon",
             "gif" to "image/gif", "bmp" to "image/bmp", "webp" to "image/webp", "svg" to "image/svg+xml",
             "woff" to "font/woff", "woff2" to "font/woff2", "ttf" to "font/ttf", "otf" to "font/otf",
             "pdf" to "application/pdf", "zip" to "application/zip", "bin" to "application/octet-stream"
         )
-        private val assets = extensions.keys - setOf("html", "htm", "shtml", "json", "xml", "txt", "bin", "zip", "pdf")
+        private val assets = extensions.keys - setOf("html", "htm", "shtml", "asp", "cgi", "json", "xml", "txt", "bin", "zip", "pdf")
 
         private fun extension(path: String) = path.substringBefore('?').substringAfterLast('/')
             .substringAfterLast('.', "").lowercase(Locale.ROOT)
@@ -125,7 +127,7 @@ internal class ResponseTransformer(private val endpoint: Endpoint, private val a
             if (inferred == null) return upstream ?: "application/octet-stream"
             val subtype = upstream?.substringBefore(';')?.trim()?.lowercase(Locale.ROOT)
             if (subtype == null || subtype == "application/octet-stream" || subtype == "text/plain" ||
-                (subtype == "text/html" && isStatic(path))) {
+                subtype == "text/js" || (subtype == "text/html" && isStatic(path))) {
                 val charset = upstream?.let { charsetParam.find(it)?.groupValues?.get(1) }
                 return if (charset == null || !inferred.startsWith("text/") && inferred !in textMimeTypes) inferred
                     else "$inferred; charset=$charset"
@@ -133,10 +135,28 @@ internal class ResponseTransformer(private val endpoint: Endpoint, private val a
             return upstream ?: inferred
         }
 
-        fun cleanCookie(header: String): String = header.split(';').map(String::trim).filterNot {
-            it.substringBefore('=').trim().equals("Domain", true) || it.equals("Secure", true)
-        }.joinToString("; ") {
-            if (it.equals("SameSite=None", true)) "SameSite=Lax" else it
+        fun cleanCookie(header: String): String {
+            val parts = header.split(';').map(String::trim).filter(String::isNotEmpty)
+            val main = parts.firstOrNull() ?: return ""
+            val value = main.substringAfter('=', "").trim()
+            val attrs = parts.drop(1)
+            val isDeleting = value.isEmpty() || value.equals("deleted", true) ||
+                attrs.any { it.startsWith("Max-Age=", true) && (it.substringAfter('=').trim().toLongOrNull() ?: 1L) <= 0L }
+            val cleaned = mutableListOf(main)
+            var hasPath = false
+            for (attr in attrs) {
+                val name = attr.substringBefore('=').trim()
+                if (name.equals("Domain", true) || attr.equals("Secure", true) || attr.equals("Partitioned", true)) continue
+                if (!isDeleting && name.equals("Expires", true)) continue
+                if (name.equals("Path", true)) {
+                    hasPath = true
+                    cleaned.add("Path=/")
+                    continue
+                }
+                cleaned.add(if (attr.equals("SameSite=None", true)) "SameSite=Lax" else attr)
+            }
+            if (!hasPath) cleaned.add("Path=/")
+            return cleaned.joinToString("; ")
         }
     }
 }
