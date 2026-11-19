@@ -5,6 +5,7 @@ import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
 import android.provider.Browser
+import android.view.ViewGroup
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
@@ -101,6 +102,10 @@ class WebViewActivity : ComponentActivity() {
                             modifier = Modifier.fillMaxWidth().weight(1f),
                             factory = { context ->
                                 WebView(context).apply {
+                                    layoutParams = ViewGroup.LayoutParams(
+                                        ViewGroup.LayoutParams.MATCH_PARENT,
+                                        ViewGroup.LayoutParams.MATCH_PARENT
+                                    )
                                     setBackgroundColor(background)
                                     @Suppress("SetJavaScriptEnabled")
                                     settings.javaScriptEnabled = true
