@@ -56,7 +56,8 @@ class MainActivity : ComponentActivity() {
             onApplyChanges = viewModel::applyChanges,
             onResetLogin = viewModel::resetLogin,
             onStopProxy = viewModel::stopProxy,
-            onClearLogs = viewModel::clearLogs
+            onClearLogs = viewModel::clearLogs,
+            onOpenUrl = ::openExternalUrl
         )
         setContent {
             val state by viewModel.state.collectAsStateWithLifecycle()
@@ -113,6 +114,14 @@ class MainActivity : ComponentActivity() {
             } finally {
                 opening = false
             }
+        }
+    }
+
+    private fun openExternalUrl(url: String) {
+        try {
+            startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
+        } catch (_: ActivityNotFoundException) {
+            browserUnavailable = true
         }
     }
 }

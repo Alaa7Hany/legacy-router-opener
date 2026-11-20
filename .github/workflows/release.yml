@@ -337,6 +337,22 @@ jobs:
           name: macos-amd64-release
           path: ${{ runner.temp }}/release-assets
 
+      - name: Verify Linux artifact is a non-empty ELF binary
+        working-directory: ${{ runner.temp }}/release-assets
+        run: |
+          set -euo pipefail
+          if [ ! -s legacy-router-opener ]; then
+            echo "Linux artifact 'legacy-router-opener' is missing or empty." >&2
+            exit 1
+          fi
+          magic="$(head -c 4 legacy-router-opener | od -An -tx1 | tr -d ' \n')"
+          if [ "$magic" != "7f454c46" ]; then
+            echo "Linux artifact 'legacy-router-opener' does not start with ELF magic (got '$magic')." >&2
+            exit 1
+          fi
+          chmod +x legacy-router-opener
+          file legacy-router-opener
+
       - name: Generate and verify combined SHA256SUMS.txt
         working-directory: ${{ runner.temp }}/release-assets
         run: |

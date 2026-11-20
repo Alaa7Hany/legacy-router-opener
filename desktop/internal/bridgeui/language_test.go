@@ -90,3 +90,40 @@ func TestWriteErrorAndQuitAreSelfContainedAndThemeAware(t *testing.T) {
 		t.Errorf("bridge.css .tls-line should wrap cleanly on narrow viewports")
 	}
 }
+
+func TestWriteBridgeFooterLinksRenderWithAndWithoutQuitURL(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		lang     string
+		quitURL  string
+		wantQuit bool
+		wantText string
+	}{
+		{"without quit URL (en)", "en", "", false, "Website"},
+		{"with quit URL (ar)", "ar", "/quit", true, "الموقع"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			if err := WriteBridge(&buf, tc.lang, "192.168.1.1", "192.168.1.1", tc.quitURL, struct{}{}); err != nil {
+				t.Fatalf("WriteBridge failed: %v", err)
+			}
+			html := buf.String()
+			for _, want := range []string{
+				`href="https://3laa.me/legacy-router-opener/" target="_blank" rel="noopener noreferrer"`,
+				`href="https://github.com/Alaa7Hany/legacy-router-opener" target="_blank" rel="noopener noreferrer"`,
+				`<span data-message="footer_website">` + tc.wantText + `</span>`,
+				`<span data-message="footer_source">GitHub</span>`,
+				`<circle cx="12" cy="12" r="9"/>`,
+				`class="footer-icon"`,
+			} {
+				if !strings.Contains(html, want) {
+					t.Errorf("WriteBridge missing %q", want)
+				}
+			}
+			hasQuit := strings.Contains(html, `id="quit-link"`)
+			if hasQuit != tc.wantQuit {
+				t.Errorf("WriteBridge hasQuit = %t, want %t", hasQuit, tc.wantQuit)
+			}
+		})
+	}
+}

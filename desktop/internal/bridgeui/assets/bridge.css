@@ -104,6 +104,41 @@ body {
   margin-block-end: 0.25rem;
 }
 
+.footer-links {
+  margin-top: 0.75rem;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 0.35rem;
+  font-size: 0.78rem;
+  color: var(--text-muted);
+}
+
+.app-footer:not(:has(#quit-link)) .footer-links {
+  margin-top: 0;
+}
+
+.footer-links a {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  color: inherit;
+  padding: 0.15rem 0.25rem;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.footer-icon {
+  inline-size: 0.9rem;
+  block-size: 0.9rem;
+  flex: none;
+}
+
+.footer-links a:hover {
+  color: var(--text);
+}
+
 .header {
   margin-bottom: 1.25rem;
 }

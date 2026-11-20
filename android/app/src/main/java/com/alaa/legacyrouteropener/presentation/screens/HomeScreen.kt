@@ -34,6 +34,7 @@ import com.alaa.legacyrouteropener.domain.model.BannerMessage
 import com.alaa.legacyrouteropener.domain.model.HardwarePreset
 import com.alaa.legacyrouteropener.domain.model.ProxyState
 import com.alaa.legacyrouteropener.domain.model.TlsInfo
+import com.alaa.legacyrouteropener.presentation.components.BridgeFooter
 import com.alaa.legacyrouteropener.presentation.components.BridgeIcons
 import com.alaa.legacyrouteropener.ui.theme.LocalBridgeColors
 import kotlinx.coroutines.flow.StateFlow
@@ -49,7 +50,8 @@ internal data class HomeActions(
     val onApplyChanges: () -> Unit,
     val onResetLogin: () -> Unit,
     val onStopProxy: () -> Unit,
-    val onClearLogs: () -> Unit
+    val onClearLogs: () -> Unit,
+    val onOpenUrl: (String) -> Unit
 )
 
 @Composable
@@ -147,6 +149,8 @@ internal fun HomeScreen(
                         }
                     }
                 }
+                Spacer(Modifier.height(8.dp))
+                BridgeFooter(msg = msg, onOpenUrl = actions.onOpenUrl)
             }
         }
     }

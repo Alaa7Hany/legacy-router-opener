@@ -8,6 +8,10 @@
   Zero-dependency, offline local TLS bridge for Windows, Linux, macOS, and Android for opening older routers, printers, switches, and server management consoles in modern browsers without Docker, Windows 7 VMs, or unpatched browsers.
 </p>
 
+<p align="center">
+  <a href="https://3laa.me/legacy-router-opener/">Website (English)</a> · <a href="https://3laa.me/legacy-router-opener/ar/">الموقع (العربية)</a>
+</p>
+
 <table align="center">
   <tr>
     <td align="center"><img src="docs/screenshots/opener-en-light.png" alt="Legacy Device and Router Opener — English Light Mode" width="360"></td>
@@ -31,7 +35,7 @@
 
 ### Linux
 
-1. Download `legacy-router-opener` from [GitHub Releases](https://github.com/AlaaHany/legacy-router-opener/releases) and run it from a terminal — no install or runtime needed:
+1. Download `legacy-router-opener` from [GitHub Releases](https://github.com/Alaa7Hany/legacy-router-opener/releases) and run it from a terminal — no install or runtime needed:
    ```bash
    sha256sum --ignore-missing -c SHA256SUMS.txt   # verify the download
    chmod +x legacy-router-opener                   # only if your browser stripped the executable bit
