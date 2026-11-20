@@ -4,16 +4,16 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta name="color-scheme" content="light dark">
-  <title>Legacy Device &amp; Router Opener — Open 192.168.1.1 &amp; Old Device Panels</title>
-  <meta name="description" content="Free, offline, open-source Android and Windows utility to open old routers (192.168.1.1), HP printers, Dell iDRAC, HPE iLO, and switches blocked by ERR_SSL_VERSION_OR_CIPHER_MISMATCH.">
+  <title>Legacy Device &amp; Router Opener — Open 192.168.1.1 (Android, Windows, Linux)</title>
+  <meta name="description" content="Free, offline, open-source Android, Windows, and Linux utility to open old routers (192.168.1.1), HP printers, Dell iDRAC, HPE iLO, and switches blocked by ERR_SSL_VERSION_OR_CIPHER_MISMATCH.">
   <link rel="canonical" href="https://3laa.me/legacy-router-opener/">
   <link rel="alternate" hreflang="en" href="https://3laa.me/legacy-router-opener/">
   <link rel="alternate" hreflang="ar" href="https://3laa.me/legacy-router-opener/ar/">
   <link rel="alternate" hreflang="x-default" href="https://3laa.me/legacy-router-opener/">
   <meta property="og:type" content="website">
   <meta property="og:url" content="https://3laa.me/legacy-router-opener/">
-  <meta property="og:title" content="Legacy Device &amp; Router Opener — Open 192.168.1.1 &amp; Old Device Panels">
-  <meta property="og:description" content="Free, offline, open-source Android and Windows utility to open old routers (192.168.1.1), HP printers, Dell iDRAC, HPE iLO, and switches blocked by ERR_SSL_VERSION_OR_CIPHER_MISMATCH.">
+  <meta property="og:title" content="Legacy Device &amp; Router Opener — Open 192.168.1.1 (Android, Windows, Linux)">
+  <meta property="og:description" content="Free, offline, open-source Android, Windows, and Linux utility to open old routers (192.168.1.1), HP printers, Dell iDRAC, HPE iLO, and switches blocked by ERR_SSL_VERSION_OR_CIPHER_MISMATCH.">
   <meta property="og:locale" content="en_US">
   <meta property="og:locale:alternate" content="ar_EG">
   <meta property="og:image" content="https://3laa.me/legacy-router-opener/screenshots/opener-en-light.png">
@@ -30,11 +30,11 @@
     "@context": "https://schema.org",
     "@type": "SoftwareApplication",
     "name": "Legacy Device & Router Opener",
-    "description": "Free, offline, open-source Android and Windows utility to open old routers (192.168.1.1), HP printers, Dell iDRAC, HPE iLO, and switches blocked by ERR_SSL_VERSION_OR_CIPHER_MISMATCH.",
+    "description": "Free, offline, open-source Android, Windows, and Linux utility to open old routers (192.168.1.1), HP printers, Dell iDRAC, HPE iLO, and switches blocked by ERR_SSL_VERSION_OR_CIPHER_MISMATCH.",
     "url": "https://3laa.me/legacy-router-opener/",
     "inLanguage": "en",
     "applicationCategory": "UtilitiesApplication",
-    "operatingSystem": "Android, Windows",
+    "operatingSystem": "Android, Windows, Linux",
     "isAccessibleForFree": true,
     "license": "https://www.gnu.org/licenses/gpl-3.0.html",
     "offers": {
@@ -44,7 +44,8 @@
     },
     "downloadUrl": [
       "https://github.com/Alaa7Hany/legacy-router-opener/releases/latest/download/legacy-router-opener.apk",
-      "https://github.com/Alaa7Hany/legacy-router-opener/releases/latest/download/legacy-router-opener.exe"
+      "https://github.com/Alaa7Hany/legacy-router-opener/releases/latest/download/legacy-router-opener.exe",
+      "https://github.com/Alaa7Hany/legacy-router-opener/releases/latest/download/legacy-router-opener"
     ]
   }
   </script>
@@ -80,6 +81,11 @@
         <span>Windows</span>
         <span class="btn-meta">.exe · 10 MB</span>
       </a>
+      <a class="btn btn-secondary" href="https://github.com/Alaa7Hany/legacy-router-opener/releases/latest/download/legacy-router-opener">
+        <svg class="btn-icon" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2.5"/><path d="M7.5 9.5l3 2.5-3 2.5M12.5 14.5h4"/></svg>
+        <span>Linux</span>
+        <span class="btn-meta">x86_64</span>
+      </a>
     </div>
 
     <p class="meta-line">
@@ -89,11 +95,12 @@
 
     <div class="disclosures">
       <details>
-        <summary>Install notes (Android &amp; Windows)</summary>
+        <summary>Install notes</summary>
         <div class="panel-body">
           <ul class="panel-list">
             <li><strong>Android:</strong> No root, no VPN. If prompted, allow installing unknown apps.</li>
             <li><strong>Windows:</strong> Portable — no install needed. If Windows SmartScreen appears, click <code>More info → Run anyway</code>.</li>
+            <li><strong>Linux (x86_64):</strong> Run <code>chmod +x legacy-router-opener &amp;&amp; ./legacy-router-opener</code> in a terminal.</li>
           </ul>
         </div>
       </details>
@@ -119,7 +126,7 @@
         <summary>Protocol details</summary>
         <div class="panel-body">
           <ul class="panel-list">
-            <li><strong>Windows (.exe):</strong> TLS 1.0–1.3, RC4/3DES, 1024-bit RSA, unsafe legacy renegotiation, HTTP (:80) fallback (for rare SSLv3 / 512-bit DH, use HTTP :80, <code>desktop/legacy/index.mjs</code> in the repo, or the Android APK).</li>
+            <li><strong>Windows &amp; Linux:</strong> TLS 1.0–1.3, RC4/3DES, 1024-bit RSA, unsafe legacy renegotiation, HTTP (:80) fallback (for rare SSLv3 / 512-bit DH, use HTTP :80, <code>desktop/legacy/index.mjs</code> in the repo, or the Android APK).</li>
             <li><strong>Android (.apk):</strong> All of the above plus built-in SSLv3 and 512-bit DHE-RSA via Bouncy Castle.</li>
           </ul>
         </div>
