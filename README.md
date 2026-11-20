@@ -71,6 +71,13 @@ go test ./...
 ```
 
 ```bash
+# Linux
+cd desktop
+go test ./...
+./build.sh 1.0.0
+```
+
+```bash
 # Android
 cd android
 ./gradlew testDebugUnitTest assembleRelease
