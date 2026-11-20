@@ -9,7 +9,7 @@ tmp_dir = "tmp"
   entrypoint = "./tmp/legacy-router-opener"
   args_bin = ["--no-browser"]
   delay = 1000
-  exclude_dir = ["tmp", "docs"]
+  exclude_dir = ["tmp", "docs", "legacy", "winres"]
   include_ext = ["go", "html", "css", "js", "json"]
   exclude_regex = ["_test\\.go"]
   stop_on_error = true
@@ -18,12 +18,6 @@ tmp_dir = "tmp"
 
 [log]
   time = true
-
-[color]
-  main = "magenta"
-  watcher = "cyan"
-  build = "yellow"
-  runner = "green"
 
 [misc]
   clean_on_exit = true
