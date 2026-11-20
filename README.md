@@ -37,7 +37,7 @@
 
 ### Linux
 
-1. Download `legacy-router-opener` from [GitHub Releases](https://github.com/AlaaHany/legacy-router-opener/releases) and run it from a terminal — no install or runtime needed:
+1. Download `legacy-router-opener` from [GitHub Releases](https://github.com/Alaa7Hany/legacy-router-opener/releases) and run it from a terminal — no install or runtime needed:
    ```bash
    sha256sum --ignore-missing -c SHA256SUMS.txt   # verify the download
    chmod +x legacy-router-opener                   # only if your browser stripped the executable bit
