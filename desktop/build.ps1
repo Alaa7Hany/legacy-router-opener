@@ -13,7 +13,7 @@ if ([string]::IsNullOrWhiteSpace($trimmedVersion)) {
     throw "Version cannot be empty."
 }
 
-$coreVersion = ($trimmedVersion -split '[-+]', 2 | Select-Object -First 1
+$coreVersion = $trimmedVersion -split '[-+]', 2 | Select-Object -First 1
 $rawParts = $coreVersion.Split('.')
 if ($rawParts.Count -lt 1 -or $rawParts.Count -gt 4) {
     throw "Cannot derive 4-part Windows FileVersion from '$Version'."
