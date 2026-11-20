@@ -39,6 +39,10 @@ android/.idea/
 *.exe
 *.syso
 captures/
+
+# Desktop build artifacts
+desktop/tmp/
+desktop/legacy-router-opener
 .externalNativeBuild/
 .cxx/
 

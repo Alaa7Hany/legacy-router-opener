@@ -74,10 +74,7 @@ go test ./...
 ```bash
 cd desktop
 go test ./...
-./build.sh 1.0.0
-# or, using the Makefile:
-make test
-make build VERSION=1.0.0
+./build.sh 1.0.0   # or: make build VERSION=1.0.0
 ```
 
 ### Android
@@ -87,13 +84,14 @@ cd android
 ```
 
 ### Makefile (desktop)
-The desktop module ships a `Makefile` for convenience:
+The desktop module ships a `Makefile` as a thin wrapper over `build.sh` / `build.ps1`:
 ```bash
 cd desktop
-make            # build for Linux (default)
-make test       # run Go tests
-make run        # run with --no-browser
-make build-windows VERSION=1.0.0
+make                              # build for Linux (amd64 by default; GOARCH=arm64 to override)
+make test                         # run Go tests
+make run                          # run with --no-browser
+make build VERSION=1.0.0          # Linux build with a version stamp
+make build-windows VERSION=1.0.0  # Windows .exe via build.ps1 (requires pwsh)
 make clean
 ```
 
@@ -103,7 +101,9 @@ Install [Air](https://github.com/air-verse/air) and run from `desktop/`:
 go install github.com/air-verse/air@latest
 air
 ```
+`desktop/.air.toml` watches the Go sources and the embedded HTML/CSS/JS assets, rebuilds on change, and restarts the binary from `desktop/tmp/` with `--no-browser` — open the control page at `http://localhost:8180/_bridge` yourself. Build output in `desktop/tmp/` is gitignored and cleared when Air exits.
 
+### Docs
 - **Desktop Docs:** [How It Works](desktop/docs/how-it-works.md) · [Design Decisions](desktop/docs/design-and-platform-decisions.md) · [Troubleshooting & CLI Flags](desktop/docs/troubleshooting-and-device-modes.md)
 - **Android Docs:** [Overview](android/docs/README.md) · [How It Works](android/docs/how-it-works.md) · [Design Decisions](android/docs/design-and-platform-decisions.md) · [Troubleshooting](android/docs/troubleshooting.md)
 
