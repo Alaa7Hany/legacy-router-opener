@@ -43,6 +43,8 @@ captures/
 # Desktop build artifacts
 desktop/tmp/
 desktop/legacy-router-opener
+desktop/legacy-router-opener-macos-arm64
+desktop/legacy-router-opener-macos-amd64
 .externalNativeBuild/
 .cxx/
 

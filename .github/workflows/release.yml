@@ -152,20 +152,57 @@ jobs:
       - name: Verify --version output
         env:
           VERSION: ${{ needs.prepare.outputs.version }}
-        run: |
-          set -euo pipefail
-          output="$(./legacy-router-opener --version)"
-          echo "Version output: $output"
-          if [ "$output" != "legacy-router-opener $VERSION" ]; then
-            echo "Unexpected --version output: '$output'" >&2
-            exit 1
-          fi
+        run: ./verify-version.sh legacy-router-opener "$VERSION"
 
       - name: Upload Linux artifact
         uses: actions/upload-artifact@v4
         with:
           name: linux-release
           path: desktop/legacy-router-opener
+          if-no-files-found: error
+
+  build-macos:
+    name: Build macOS Release (${{ matrix.arch }})
+    needs: prepare
+    runs-on: ${{ matrix.arch == 'amd64' && 'macos-15-intel' || 'macos-latest' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [arm64, amd64]
+    defaults:
+      run:
+        working-directory: desktop
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: desktop/go.mod
+          cache: false
+
+      - name: Run go vet
+        run: go vet ./...
+
+      - name: Run unit tests
+        run: go test -count=1 ./...
+
+      - name: Build macOS executable
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: ./build-macos.sh "$VERSION" "${{ matrix.arch }}"
+
+      - name: Verify --version output
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: ./verify-version.sh "legacy-router-opener-macos-${{ matrix.arch }}" "$VERSION"
+
+      - name: Upload macOS artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-${{ matrix.arch }}-release
+          path: desktop/legacy-router-opener-macos-${{ matrix.arch }}
           if-no-files-found: error
 
   build-android:
@@ -265,7 +302,7 @@ jobs:
 
   publish-release:
     name: Publish GitHub Release
-    needs: [prepare, build-windows, build-linux, build-android]
+    needs: [prepare, build-windows, build-linux, build-macos, build-android]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -288,11 +325,24 @@ jobs:
           name: linux-release
           path: ${{ runner.temp }}/release-assets
 
+      - name: Download macOS arm64 artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: macos-arm64-release
+          path: ${{ runner.temp }}/release-assets
+
+      - name: Download macOS amd64 artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: macos-amd64-release
+          path: ${{ runner.temp }}/release-assets
+
       - name: Generate and verify combined SHA256SUMS.txt
         working-directory: ${{ runner.temp }}/release-assets
         run: |
           set -euo pipefail
-          sha256sum legacy-router-opener.exe legacy-router-opener.apk legacy-router-opener > SHA256SUMS.txt
+          sha256sum legacy-router-opener.exe legacy-router-opener.apk legacy-router-opener \
+            legacy-router-opener-macos-arm64 legacy-router-opener-macos-amd64 > SHA256SUMS.txt
           cat SHA256SUMS.txt
           sha256sum -c SHA256SUMS.txt
 
@@ -312,6 +362,8 @@ jobs:
               legacy-router-opener.exe \
               legacy-router-opener.apk \
               legacy-router-opener \
+              legacy-router-opener-macos-arm64 \
+              legacy-router-opener-macos-amd64 \
               SHA256SUMS.txt \
               --clobber
             gh release edit "$TAG_NAME" "--prerelease=$IS_PRERELEASE"
@@ -321,6 +373,8 @@ jobs:
               legacy-router-opener.exe
               legacy-router-opener.apk
               legacy-router-opener
+              legacy-router-opener-macos-arm64
+              legacy-router-opener-macos-amd64
               SHA256SUMS.txt
               --title "$TAG_NAME"
               --generate-notes

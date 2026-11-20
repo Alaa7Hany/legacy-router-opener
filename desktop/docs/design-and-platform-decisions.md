@@ -37,3 +37,10 @@ Key product and engineering choices made for the Desktop version, and why they e
 
 - **Problem:** Some routers reject modern TLS 1.3 handshake extensions on port 443 and require an older TLS 1.0–1.2 handshake. Trying the modern handshake on every single image or script adds unnecessary delay.
 - **Decision:** Once a device falls back to the older TLS profile (or plain HTTP on port 80), the desktop bridge remembers that preference for that address in memory so subsequent requests load immediately. Clicking **Fix stuck login** clears those remembered states if you switch or reboot hardware.
+
+---
+
+## 6. macOS as an Unsigned, Per-Architecture Binary
+
+- **Decision:** macOS is shipped as two unsigned desktop binaries (`arm64` and `amd64`) built with `desktop/build-macos.sh` and published as release assets. The Go source needs no macOS-specific changes — browser launch and gateway detection already handle it. Users clear Gatekeeper once before first launch; no `.app` bundle or universal binary is produced.
+- **Why:** This keeps macOS on the same distribution model as Windows and Linux. See [ADR 0001](../../docs/adr/0001-macos-desktop-release.md) for the alternatives considered and the verification limits.
