@@ -121,6 +121,53 @@ jobs:
           path: desktop/legacy-router-opener.exe
           if-no-files-found: error
 
+  build-linux:
+    name: Build Linux Release
+    needs: prepare
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: desktop
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: desktop/go.mod
+          cache: false
+
+      - name: Run go vet
+        run: go vet ./...
+
+      - name: Run unit tests
+        run: go test -count=1 ./...
+
+      - name: Build Linux executable
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: ./build.sh "$VERSION"
+
+      - name: Verify --version output
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          set -euo pipefail
+          output="$(./legacy-router-opener --version)"
+          echo "Version output: $output"
+          if [ "$output" != "legacy-router-opener $VERSION" ]; then
+            echo "Unexpected --version output: '$output'" >&2
+            exit 1
+          fi
+
+      - name: Upload Linux artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-release
+          path: desktop/legacy-router-opener
+          if-no-files-found: error
+
   build-android:
     name: Build Android Release
     needs: prepare
@@ -218,7 +265,7 @@ jobs:
 
   publish-release:
     name: Publish GitHub Release
-    needs: [prepare, build-windows, build-android]
+    needs: [prepare, build-windows, build-linux, build-android]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -235,11 +282,17 @@ jobs:
           name: android-release
           path: ${{ runner.temp }}/release-assets
 
+      - name: Download Linux artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: linux-release
+          path: ${{ runner.temp }}/release-assets
+
       - name: Generate and verify combined SHA256SUMS.txt
         working-directory: ${{ runner.temp }}/release-assets
         run: |
           set -euo pipefail
-          sha256sum legacy-router-opener.exe legacy-router-opener.apk > SHA256SUMS.txt
+          sha256sum legacy-router-opener.exe legacy-router-opener.apk legacy-router-opener > SHA256SUMS.txt
           cat SHA256SUMS.txt
           sha256sum -c SHA256SUMS.txt
 
@@ -258,6 +311,7 @@ jobs:
             gh release upload "$TAG_NAME" \
               legacy-router-opener.exe \
               legacy-router-opener.apk \
+              legacy-router-opener \
               SHA256SUMS.txt \
               --clobber
             gh release edit "$TAG_NAME" "--prerelease=$IS_PRERELEASE"
@@ -266,6 +320,7 @@ jobs:
               release create "$TAG_NAME"
               legacy-router-opener.exe
               legacy-router-opener.apk
+              legacy-router-opener
               SHA256SUMS.txt
               --title "$TAG_NAME"
               --generate-notes
