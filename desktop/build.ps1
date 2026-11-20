@@ -6,12 +6,14 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
-$trimmedVersion = $Version.Trim()
+# The embedded version never carries a leading "v"/"V" — keep in sync with
+# build.sh and the Makefile.
+$trimmedVersion = ($Version.Trim() -replace '^[vV]', '')
 if ([string]::IsNullOrWhiteSpace($trimmedVersion)) {
     throw "Version cannot be empty."
 }
 
-$coreVersion = ($trimmedVersion -replace '^[vV]', '') -split '[-+]', 2 | Select-Object -First 1
+$coreVersion = ($trimmedVersion -split '[-+]', 2 | Select-Object -First 1
 $rawParts = $coreVersion.Split('.')
 if ($rawParts.Count -lt 1 -or $rawParts.Count -gt 4) {
     throw "Cannot derive 4-part Windows FileVersion from '$Version'."

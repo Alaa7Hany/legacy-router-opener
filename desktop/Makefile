@@ -1,22 +1,23 @@
 # Makefile for the Legacy Router Opener desktop module.
 #
+# Thin wrapper over the canonical build scripts so there is one source of
+# truth per platform:
+#   - build.sh  builds Linux binaries (validates the version, strips "v")
+#   - build.ps1 builds the Windows .exe (adds go-winres icon/version resources)
+#
 # Usage:
-#   make                      # build for the current host (Linux by default)
-#   make build VERSION=1.0.0  # build with a version stamp
-#   make test                 # run the Go test suite
-#   make run                  # run without auto-opening a browser
-#   make clean                # remove build artifacts
+#   make                              # build for Linux via build.sh (amd64 by default)
+#   make GOARCH=arm64                 # build for linux/arm64
+#   make build VERSION=1.0.0          # build for Linux with a version stamp
+#   make build-windows VERSION=1.0.0  # build the Windows .exe via build.ps1 (requires pwsh)
+#   make test                         # run the Go test suite
+#   make run                          # run without auto-opening a browser
+#   make clean                        # remove build artifacts
 
 VERSION ?= 0.0.0-dev
 GO ?= go
 GOTOOLCHAIN ?= auto
-
-BINARY := legacy-router-opener
-ifeq ($(OS),Windows_NT)
-BINARY := legacy-router-opener.exe
-endif
-
-LDFLAGS := -s -w -X main.version=$(VERSION)
+GOARCH ?= amd64
 
 .PHONY: all build build-linux build-windows test run clean
 
@@ -25,10 +26,10 @@ all: build
 build: build-linux
 
 build-linux:
-	GOTOOLCHAIN=$(GOTOOLCHAIN) GOOS=linux GOARCH=amd64 $(GO) build -trimpath -ldflags="$(LDFLAGS)" -o $(BINARY) .
+	GOARCH=$(GOARCH) GOTOOLCHAIN=$(GOTOOLCHAIN) ./build.sh '$(VERSION)'
 
 build-windows:
-	GOTOOLCHAIN=$(GOTOOLCHAIN) GOOS=windows GOARCH=amd64 $(GO) build -trimpath -ldflags="-s -w -H=windowsgui -X main.version=$(VERSION)" -o legacy-router-opener.exe .
+	GOTOOLCHAIN=$(GOTOOLCHAIN) pwsh -NoProfile -ExecutionPolicy Bypass -File ./build.ps1 -Version '$(VERSION)'
 
 test:
 	GOTOOLCHAIN=$(GOTOOLCHAIN) $(GO) test ./...
