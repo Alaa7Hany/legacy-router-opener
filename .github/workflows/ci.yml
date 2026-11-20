@@ -76,11 +76,55 @@ jobs:
         run: ./build.sh 0.0.0-ci
 
       - name: Verify --version output
-        run: |
-          set -euo pipefail
-          output="$(./legacy-router-opener --version)"
-          echo "Version output: $output"
-          if [ "$output" != "legacy-router-opener 0.0.0-ci" ]; then
-            echo "Unexpected --version output: '$output'" >&2
-            exit 1
-          fi
+        run: ./verify-version.sh legacy-router-opener 0.0.0-ci
+
+  desktop-feature-tests:
+    name: macOS Feature Tests (TDD seams)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: desktop
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: desktop/go.mod
+          cache: false
+
+      - name: Run macOS feature test suite
+        run: make test-macos
+
+  desktop-macos:
+    name: macOS Desktop (Go, ${{ matrix.arch }})
+    runs-on: ${{ matrix.arch == 'amd64' && 'macos-15-intel' || 'macos-latest' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [arm64, amd64]
+    defaults:
+      run:
+        working-directory: desktop
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: desktop/go.mod
+          cache: false
+
+      - name: Run go vet
+        run: go vet ./...
+
+      - name: Run unit tests
+        run: go test -v -count=1 ./...
+
+      - name: Smoke-build executable
+        run: ./build-macos.sh 0.0.0-ci "${{ matrix.arch }}"
+
+      - name: Verify --version output
+        run: ./verify-version.sh "legacy-router-opener-macos-${{ matrix.arch }}" 0.0.0-ci

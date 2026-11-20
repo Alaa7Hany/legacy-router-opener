@@ -2,7 +2,7 @@
 
 Plain-English guides explaining how the Desktop bridge works, why it is designed the way it is, and how to troubleshoot common router or device login issues.
 
-See **Desktop Quick Start** in the [project README](../../README.md) for Windows launch and quit instructions.
+See **Desktop Quick Start** in the [project README](../../README.md) for Windows, Linux, and macOS launch and quit instructions.
 
 ## Guides
 
