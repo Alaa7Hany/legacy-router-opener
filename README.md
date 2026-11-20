@@ -45,7 +45,7 @@
 
 ### macOS (Apple Silicon / Intel)
 
-1. Download the build for your Mac from [GitHub Releases](https://github.com/AlaaHany/legacy-router-opener/releases): `legacy-router-opener-macos-arm64` for Apple Silicon, or `legacy-router-opener-macos-amd64` for Intel. Then run it from a terminal — no install or runtime needed:
+1. Download the build for your Mac from [GitHub Releases](https://github.com/Alaa7Hany/legacy-router-opener/releases): `legacy-router-opener-macos-arm64` for Apple Silicon, or `legacy-router-opener-macos-amd64` for Intel. Then run it from a terminal — no install or runtime needed:
    ```bash
    # Verify: compare this hash with the matching line in SHA256SUMS.txt
    shasum -a 256 legacy-router-opener-macos-arm64   # or -amd64
