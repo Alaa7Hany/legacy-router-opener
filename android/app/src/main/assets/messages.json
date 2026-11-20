@@ -74,7 +74,9 @@
     "auth_title": "Sign in",
     "auth_username": "Username",
     "auth_password": "Password",
-    "auth_sign_in": "Sign in"
+    "auth_sign_in": "Sign in",
+    "footer_website": "Website",
+    "footer_source": "GitHub"
   },
   "ar": {
     "app_title": "فاتح صفحات الراوتر",
@@ -151,6 +153,8 @@
     "auth_title": "تسجيل الدخول",
     "auth_username": "اسم المستخدم",
     "auth_password": "كلمة المرور",
-    "auth_sign_in": "تسجيل الدخول"
+    "auth_sign_in": "تسجيل الدخول",
+    "footer_website": "الموقع",
+    "footer_source": "GitHub"
   }
 }

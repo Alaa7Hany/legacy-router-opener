@@ -51,16 +51,40 @@ func Text(language, key string) string {
 	return messages[language][key]
 }
 
+const (
+	websiteURL = "https://3laa.me/legacy-router-opener/"
+	sourceURL  = "https://github.com/Alaa7Hany/legacy-router-opener"
+)
+
+type footerLink struct {
+	URL        string
+	MessageKey string
+	Label      string
+	Icon       string
+}
+
+func footerLinks(language string) []footerLink {
+	return []footerLink{
+		{URL: websiteURL, MessageKey: "footer_website", Label: Text(language, "footer_website"), Icon: "globe"},
+		{URL: sourceURL, MessageKey: "footer_source", Label: Text(language, "footer_source"), Icon: "github"},
+	}
+}
+
 type pageLanguage struct {
-	Language  string
-	Direction string
-	Messages  map[string]string
-	Catalog   map[string]map[string]string
+	Language    string
+	Direction   string
+	Messages    map[string]string
+	Catalog     map[string]map[string]string
+	FooterLinks []footerLink
 }
 
 func forLanguage(language string) pageLanguage {
 	page := pageLanguage{
-		Language: language, Direction: "ltr", Messages: messages[language], Catalog: messages,
+		Language:    language,
+		Direction:   "ltr",
+		Messages:    messages[language],
+		Catalog:     messages,
+		FooterLinks: footerLinks(language),
 	}
 	if language == "ar" {
 		page.Direction = "rtl"

@@ -95,12 +95,7 @@
         </details>
       </div>
     </form>
-    {{if .QuitURL}}
-    <footer class="app-footer">
-      <p class="subtitle" data-message="keep_tab_open">{{.Messages.keep_tab_open}}</p>
-      <a id="quit-link" class="link-btn" href="{{.QuitURL}}?lang={{.Language}}" data-preserve-lang data-message="quit">{{.Messages.quit}}</a>
-    </footer>
-    {{end}}
+    {{template "app-footer.html" .}}
   </main>
 
   <script id="initial-state" type="application/json">{{.State}}</script>

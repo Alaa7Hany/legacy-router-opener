@@ -61,7 +61,9 @@
     "preset_cisco-hp_name": "Cisco / HP switch or firewall",
     "preset_cisco-hp_help": "For older network switches and firewalls.",
     "preset_printer-nas_name": "Printer, storage device, or camera",
-    "preset_printer-nas_help": "For older network printers, storage devices, and cameras."
+    "preset_printer-nas_help": "For older network printers, storage devices, and cameras.",
+    "footer_website": "Website",
+    "footer_source": "GitHub"
   },
   "ar": {
     "app_title": "فاتح صفحات الراوتر",
@@ -125,6 +127,8 @@
     "preset_cisco-hp_name": "أجهزة الشبكة من \u2066Cisco / HP\u2069",
     "preset_cisco-hp_help": "لمبدّلات الشبكة وجدران الحماية القديمة.",
     "preset_printer-nas_name": "طابعة أو جهاز تخزين أو كاميرا",
-    "preset_printer-nas_help": "لطابعات الشبكة وأجهزة التخزين والكاميرات القديمة."
+    "preset_printer-nas_help": "لطابعات الشبكة وأجهزة التخزين والكاميرات القديمة.",
+    "footer_website": "الموقع",
+    "footer_source": "GitHub"
   }
 }
