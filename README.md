@@ -77,6 +77,13 @@ cd android
 ```
 
 - **Desktop Docs:** [How It Works](desktop/docs/how-it-works.md) · [Design Decisions](desktop/docs/design-and-platform-decisions.md) · [Troubleshooting & CLI Flags](desktop/docs/troubleshooting-and-device-modes.md)
+
+### Hot reload (development)
+Install [Air](https://github.com/air-verse/air) and run from `desktop/`:
+```bash
+go install github.com/air-verse/air@latest
+air
+```
 - **Android Docs:** [Overview](android/docs/README.md) · [How It Works](android/docs/how-it-works.md) · [Design Decisions](android/docs/design-and-platform-decisions.md) · [Troubleshooting](android/docs/troubleshooting.md)
 
 ## Support & License
