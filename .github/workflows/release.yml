@@ -288,6 +288,16 @@ jobs:
           name: linux-release
           path: ${{ runner.temp }}/release-assets
 
+      - name: Verify Linux artifact kept its executable bit
+        working-directory: ${{ runner.temp }}/release-assets
+        run: |
+          set -euo pipefail
+          if [ ! -x legacy-router-opener ]; then
+            echo "Linux artifact 'legacy-router-opener' is not executable after download." >&2
+            exit 1
+          fi
+          echo "Linux artifact is executable."
+
       - name: Generate and verify combined SHA256SUMS.txt
         working-directory: ${{ runner.temp }}/release-assets
         run: |
