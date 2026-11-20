@@ -63,27 +63,39 @@ See [Troubleshooting & Protocol Matrix](desktop/docs/troubleshooting-and-device-
 
 ## Build & Docs
 
+### Windows
 ```powershell
-# Windows
 cd desktop
 go test ./...
 .\build.ps1 -Version 1.0.0
 ```
 
+### Linux
 ```bash
-# Linux
 cd desktop
 go test ./...
 ./build.sh 1.0.0
+# or, using the Makefile:
+make test
+make build VERSION=1.0.0
 ```
 
+### Android
 ```bash
-# Android
 cd android
 ./gradlew testDebugUnitTest assembleRelease
 ```
 
-- **Desktop Docs:** [How It Works](desktop/docs/how-it-works.md) · [Design Decisions](desktop/docs/design-and-platform-decisions.md) · [Troubleshooting & CLI Flags](desktop/docs/troubleshooting-and-device-modes.md)
+### Makefile (desktop)
+The desktop module ships a `Makefile` for convenience:
+```bash
+cd desktop
+make            # build for Linux (default)
+make test       # run Go tests
+make run        # run with --no-browser
+make build-windows VERSION=1.0.0
+make clean
+```
 
 ### Hot reload (development)
 Install [Air](https://github.com/air-verse/air) and run from `desktop/`:
@@ -91,6 +103,8 @@ Install [Air](https://github.com/air-verse/air) and run from `desktop/`:
 go install github.com/air-verse/air@latest
 air
 ```
+
+- **Desktop Docs:** [How It Works](desktop/docs/how-it-works.md) · [Design Decisions](desktop/docs/design-and-platform-decisions.md) · [Troubleshooting & CLI Flags](desktop/docs/troubleshooting-and-device-modes.md)
 - **Android Docs:** [Overview](android/docs/README.md) · [How It Works](android/docs/how-it-works.md) · [Design Decisions](android/docs/design-and-platform-decisions.md) · [Troubleshooting](android/docs/troubleshooting.md)
 
 ## Support & License
