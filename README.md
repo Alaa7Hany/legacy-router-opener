@@ -5,7 +5,7 @@
 <h1 align="center">Legacy Device &amp; Router Opener</h1>
 
 <p align="center">
-  Zero-dependency, offline local TLS bridge for Windows and Android for opening older routers, printers, switches, and server management consoles in modern browsers without Docker, Windows 7 VMs, or unpatched browsers.
+  Zero-dependency, offline local TLS bridge for Windows, Linux, and Android for opening older routers, printers, switches, and server management consoles in modern browsers without Docker, Windows 7 VMs, or unpatched browsers.
 </p>
 
 <table align="center">
@@ -31,6 +31,18 @@
 > **Windows SmartScreen:** Release binaries are currently unsigned — click **More info** → **Run anyway**.
 > Releases are built cleanly by GitHub Actions with `SHA256SUMS.txt` (`Get-FileHash .\legacy-router-opener.exe -Algorithm SHA256`).
 
+### Linux
+
+1. Download `legacy-router-opener` from [GitHub Releases](https://github.com/AlaaHany/legacy-router-opener/releases) and run it from a terminal — no install or runtime needed:
+   ```bash
+   sha256sum --ignore-missing -c SHA256SUMS.txt   # verify the download
+   chmod +x legacy-router-opener                   # only if your browser stripped the executable bit
+   ./legacy-router-opener
+   ```
+2. Your browser opens `http://localhost:8180/_bridge` (with built-in **English & العربية RTL** toggle).
+3. Click **Open router page** (`http://localhost:8080/`), or expand **Change device** to pick a target IP or profile.
+4. Keep the opener tab open while using your device; closing the last opener tab stops the bridge after 4 seconds (or click **Quit app**).
+
 ### Android (Android 8.0+ / API 26+)
 
 1. Download `legacy-router-opener.apk` from [GitHub Releases](https://github.com/Alaa7Hany/legacy-router-opener/releases) and install it (or run `adb install legacy-router-opener.apk`).
@@ -50,15 +62,15 @@ Resolves `ERR_SSL_VERSION_OR_CIPHER_MISMATCH`, `SSL_ERROR_UNSUPPORTED_VERSION`, 
 - **Printers, NAS & Cameras:** HP LaserJet / Officejet EWS, QNAP / ReadyNAS, Hikvision / Dahua cameras
 
 *Protocol coverage:*
-- **Windows (`.exe`):** TLS 1.0–1.3, 1024-bit RSA/SHA-1, `RC4`, `3DES`, and unsafe legacy renegotiation. Go's stdlib (`crypto/tls`) does not implement finite-field `DHE-RSA` or `SSLv3` — use plain HTTP (`:80`), [`desktop/legacy/index.mjs`](desktop/legacy/index.mjs), or the **Android app** for those devices.
+- **Windows & Linux (`.exe` / desktop binary):** TLS 1.0–1.3, 1024-bit RSA/SHA-1, `RC4`, `3DES`, and unsafe legacy renegotiation. Go's stdlib (`crypto/tls`) does not implement finite-field `DHE-RSA` or `SSLv3` — use plain HTTP (`:80`), [`desktop/legacy/index.mjs`](desktop/legacy/index.mjs), or the **Android app** for those devices.
 - **Android (`.apk`):** Bundled Bouncy Castle legacy TLS engine covering TLS 1.0–1.3, `SSLv3`, `512-bit`/`768-bit DHE-RSA` (`DH_KEY_TOO_SMALL`), `RC4`/`3DES`, and pre-RFC-5746 unsafe renegotiation — no root, no VPN, and no browser setting changes.
 
 See [Troubleshooting & Protocol Matrix](desktop/docs/troubleshooting-and-device-modes.md) for the full matrix.
 
 ## Security at a Glance
 
-- **Loopback-only:** Listens exclusively on loopback (`127.0.0.1` / `[::1]` on Windows; `127.0.0.1` on Android).
-- **Origin isolation:** Windows isolates control/quit endpoints (`:8180`) from the proxied device (`:8080`) with strict `Host`, `Origin`, CSRF, and CSP enforcement; Android issues a fresh random `<hex>.localhost` origin per session and clears retired cookies/storage on switch or reset.
+- **Loopback-only:** Listens exclusively on loopback (`127.0.0.1` / `[::1]` on the desktop app — Windows and Linux; `127.0.0.1` on Android).
+- **Origin isolation:** The desktop app isolates control/quit endpoints (`:8180`) from the proxied device (`:8080`) with strict `Host`, `Origin`, CSRF, and CSP enforcement; Android issues a fresh random `<hex>.localhost` origin per session and clears retired cookies/storage on switch or reset.
 - **Offline & private:** Zero telemetry, zero analytics, zero ads, and no modifications to system or browser settings.
 
 ## Build & Docs
