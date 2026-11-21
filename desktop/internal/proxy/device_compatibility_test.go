@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -41,13 +40,9 @@ func TestDesktopPresetsPreserveAuthenticatedNavigation(t *testing.T) {
 				t.Fatalf("add a simulated device for preset %q", preset.ID)
 			}
 			device := simulatedAdminPage(t, fixture.tlsVersion, fixture.redirectHost)
-			bridge := NewServer(Options{InitialTarget: device.URL})
-			local := httptest.NewServer(bridge.ProxyHandler())
-			defer local.Close()
-			bridge.SetProxyPort(local.Listener.Addr().(*net.TCPAddr).Port)
-			control := httptest.NewServer(bridge.ControlHandler())
-			defer control.Close()
-			bridge.SetControlPort(control.Listener.Addr().(*net.TCPAddr).Port)
+			plane := newBoundControlPlane(t, Options{InitialTarget: device.URL})
+			local := plane.proxy
+			control := plane.control
 
 			// The client has no cookie jar, as if it dropped the device's login cookie.
 			client := local.Client()

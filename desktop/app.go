@@ -17,10 +17,10 @@ import (
 
 type desktopApp struct {
 	proxy, control *http.Server
+	process        *bridgeProcess
 	stopping       chan struct{}
 	quitRequested  chan struct{}
 	serveErrors    chan error
-	tabs           *tabLifetime
 }
 
 func run(ctx context.Context, options launchOptions) error {
@@ -58,39 +58,24 @@ func startApp(options launchOptions) (*desktopApp, string, error) {
 	}
 
 	requestedPort := validProxyPort(options.port)
-	unlock, err := lockStartup(requestedPort)
-	if err != nil {
-		return nil, "", err
+	var startupTimeout time.Duration
+	if !options.noBrowser && !options.openRouter {
+		startupTimeout = openerStartupTimeout
 	}
-	defer unlock()
+	quitRequested := make(chan struct{})
+	requestStop := sync.OnceFunc(func() {
+		close(quitRequested)
+	})
 
-	listeners, port, existing, existingControlPort, err := listenWithFallback(requestedPort)
+	process, err := newBridgeProcess(requestedPort, startupTimeout, requestStop)
 	if err != nil {
 		return nil, "", err
 	}
-	if existing {
-		openerPort := existingControlPort
-		if openerPort <= 0 {
-			openerPort = port
-		}
-		openerURL := fmt.Sprintf("http://localhost:%d/_bridge", openerPort)
-		launchURL := openerURL
-		if options.openRouter {
-			launchURL = fmt.Sprintf("http://localhost:%d/", port)
-		}
-		fmt.Printf("[INFO] Reusing Router Page Opener on port %d.\n", port)
+	identity := process.identity
+	launchURL := process.launchURL(options.openRouter)
+	if process.reused {
+		fmt.Printf("[INFO] Reusing Router Page Opener on port %d.\n", identity.proxyPort)
 		return nil, launchURL, nil
-	}
-
-	controlListeners, controlPort, err := listenControlWithFallback(port)
-	if err != nil {
-		closeListeners(listeners)
-		return nil, "", err
-	}
-	openerURL := fmt.Sprintf("http://localhost:%d/_bridge", controlPort)
-	launchURL := openerURL
-	if options.openRouter {
-		launchURL = fmt.Sprintf("http://localhost:%d/", port)
 	}
 
 	detectedGateway := gateway.DetectDefaultGateway()
@@ -99,43 +84,38 @@ func startApp(options launchOptions) (*desktopApp, string, error) {
 		target = detectedGateway
 	}
 	app := &desktopApp{
+		process:       process,
 		stopping:      make(chan struct{}),
-		quitRequested: make(chan struct{}),
-		serveErrors:   make(chan error, len(listeners)+len(controlListeners)),
+		quitRequested: quitRequested,
+		serveErrors:   make(chan error, len(process.proxyListeners)+len(process.controlListeners)),
 	}
-	requestStop := sync.OnceFunc(func() {
-		close(app.quitRequested)
-	})
-	var startupTimeout time.Duration
-	if !options.noBrowser && !options.openRouter {
-		startupTimeout = openerStartupTimeout
-	}
-	app.tabs = newTabLifetime(startupTimeout, requestStop)
-	quit := newQuitHandler(controlPort, requestStop)
-	quit.watchTab = app.tabs.connect
+	quit := newQuitHandler(identity.controlPort, requestStop)
+	quit.watchTab = process.registerOpener
 	quit.stopping = app.stopping
 	bridge := proxy.NewServer(proxy.Options{
-		ProxyPort:       port,
-		ControlPort:     controlPort,
-		RequestedPort:   requestedPort,
+		ProxyPort:       identity.proxyPort,
+		ControlPort:     identity.controlPort,
+		RequestedPort:   identity.requestedPort,
 		InitialTarget:   target,
 		InitialPresetID: options.preset,
 		DetectedGateway: detectedGateway,
 		OnStdoutLog:     func(line string) { fmt.Println(line) },
 		QuitURL:         quitPath,
 		Stopping:        app.stopping,
-		WatchOpenerTab:  app.tabs.connect,
 	})
 	if initialTarget != "" {
 		if err := bridge.CheckTargetAllowed(initialTarget); err != nil {
-			app.tabs.close()
-			closeListeners(listeners)
-			closeListeners(controlListeners)
+			process.close()
 			return nil, "", err
 		}
 	}
 
 	controlHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/_bridge/events" && r.URL.Query().Get("opener") == "1" &&
+			r.Header.Get("Sec-Fetch-Site") == "same-origin" {
+			endTab := process.registerOpener()
+			defer endTab()
+		}
 		if r.URL.Path == quitPath || strings.HasPrefix(r.URL.Path, quitPath+"/") {
 			quit.ServeHTTP(w, r)
 			return
@@ -144,23 +124,23 @@ func startApp(options launchOptions) (*desktopApp, string, error) {
 	})
 
 	app.proxy = &http.Server{
-		Handler:           withInstancePort(bridge.ProxyHandler(), requestedPort),
+		Handler:           process.proxyHandler(bridge.ProxyHandler()),
 		ReadHeaderTimeout: 30 * time.Second,
 	}
 	app.control = &http.Server{
 		Handler:           controlHandler,
 		ReadHeaderTimeout: 30 * time.Second,
 	}
-	for _, listener := range listeners {
+	for _, listener := range process.proxyListeners {
 		go app.serve(app.proxy, listener)
 	}
-	for _, listener := range controlListeners {
+	for _, listener := range process.controlListeners {
 		go app.serve(app.control, listener)
 	}
 
 	snapshot := bridge.Snapshot()
 	fmt.Printf("Router Page Opener\nGateway: %s\nTarget: %s (%s)\nOpener Page: %s\nRouter Page: http://localhost:%d/\nPress Ctrl+C or use Quit app to stop.\n",
-		detectedGateway, snapshot.ResolvedTarget, upstream.FindPreset(snapshot.Preset).Name, openerURL, port)
+		detectedGateway, snapshot.ResolvedTarget, upstream.FindPreset(snapshot.Preset).Name, process.openerURL(), identity.proxyPort)
 	return app, launchURL, nil
 }
 
@@ -171,7 +151,7 @@ func (app *desktopApp) serve(server *http.Server, listener net.Listener) {
 }
 
 func (app *desktopApp) shutdown() {
-	app.tabs.close()
+	app.process.close()
 	close(app.stopping)
 	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 	defer cancel()

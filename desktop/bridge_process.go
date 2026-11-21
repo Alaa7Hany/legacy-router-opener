@@ -20,6 +20,111 @@ const (
 	controlPortField       = "X-Legacy-Router-Control-Port"
 )
 
+// bridgeIdentity is the Bridge's immutable local address, resolved before any
+// handler is constructed so no caller has to patch ports afterwards.
+type bridgeIdentity struct {
+	proxyPort     int
+	controlPort   int
+	requestedPort int
+	openerHost    string
+}
+
+// bridgeProcess owns port fallback, both local origins, instance reuse and
+// opener registration. Its identity is fixed once construction succeeds.
+type bridgeProcess struct {
+	identity         bridgeIdentity
+	proxyListeners   []net.Listener
+	controlListeners []net.Listener
+	reused           bool
+	tabs             *tabLifetime
+}
+
+// newBridgeProcess binds both local origins under the startup lock, probes for
+// an already-running Bridge and returns the identity the caller builds the
+// control plane from. When an existing Bridge answers, reused is true and this
+// process holds no listeners of its own.
+func newBridgeProcess(requestedPort int, startupTimeout time.Duration, requestStop func()) (*bridgeProcess, error) {
+	unlock, err := lockStartup(requestedPort)
+	if err != nil {
+		return nil, err
+	}
+	defer unlock()
+
+	listeners, port, existing, existingControlPort, err := listenWithFallback(requestedPort)
+	if err != nil {
+		return nil, err
+	}
+	process := &bridgeProcess{
+		identity: bridgeIdentity{
+			proxyPort:     port,
+			requestedPort: requestedPort,
+			openerHost:    "localhost",
+		},
+	}
+	if existing {
+		openerPort := existingControlPort
+		if openerPort <= 0 {
+			openerPort = port
+		}
+		process.reused = true
+		process.identity.controlPort = openerPort
+		return process, nil
+	}
+
+	controlListeners, controlPort, err := listenControlWithFallback(port)
+	if err != nil {
+		closeListeners(listeners)
+		return nil, err
+	}
+	process.proxyListeners = listeners
+	process.controlListeners = controlListeners
+	process.identity.controlPort = controlPort
+	process.tabs = newTabLifetime(startupTimeout, requestStop)
+	return process, nil
+}
+
+// openerURL is the canonical Opener address advertised on this Bridge.
+func (p *bridgeProcess) openerURL() string {
+	return fmt.Sprintf("http://%s:%d/_bridge", p.identity.openerHost, p.identity.controlPort)
+}
+
+// launchURL is the address handed to the browser on startup.
+func (p *bridgeProcess) launchURL(openRouter bool) string {
+	if openRouter {
+		return fmt.Sprintf("http://%s:%d/", p.identity.openerHost, p.identity.proxyPort)
+	}
+	return p.openerURL()
+}
+
+// proxyHandler injects the requested port on the proxy origin's ping response
+// so a later launch can match this instance even after its preferred port frees.
+func (p *bridgeProcess) proxyHandler(handler http.Handler) http.Handler {
+	port := strconv.Itoa(p.identity.requestedPort)
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == pingPath {
+			w.Header().Set(requestedPortField, port)
+		}
+		handler.ServeHTTP(w, r)
+	})
+}
+
+// registerOpener records an attached Opener stream and returns its cleanup.
+func (p *bridgeProcess) registerOpener() func() {
+	if p.tabs == nil {
+		return func() {}
+	}
+	return p.tabs.connect()
+}
+
+// close releases tab state and any listeners held before the servers took over.
+func (p *bridgeProcess) close() {
+	if p.tabs != nil {
+		p.tabs.close()
+	}
+	closeListeners(p.proxyListeners)
+	closeListeners(p.controlListeners)
+}
+
 func validProxyPort(port int) int {
 	if port < 1 || port > 65535 {
 		return 8080
@@ -140,16 +245,6 @@ func closeListeners(listeners []net.Listener) {
 	for _, ln := range listeners {
 		_ = ln.Close()
 	}
-}
-
-func withInstancePort(bridge http.Handler, requestedPort int) http.Handler {
-	port := strconv.Itoa(requestedPort)
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == pingPath {
-			w.Header().Set(requestedPortField, port)
-		}
-		bridge.ServeHTTP(w, r)
-	})
 }
 
 func isExistingProxy(port, requestedPort int, allowLegacy bool) (bool, int) {
