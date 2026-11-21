@@ -56,7 +56,7 @@ func (q *quitHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	language := bridgeui.SelectLanguage(r.URL.Query().Get("lang"), r.Header.Get("Accept-Language"))
-	openerURL := fmt.Sprintf("http://%s/_bridge?lang=%s", proxy.CanonicalLoopbackHost(r.Host), language)
+	openerURL := fmt.Sprintf("http://%s:%d/_bridge?lang=%s", proxy.CanonicalLoopbackHost(r.Host), q.controlPort, language)
 	switch r.Method {
 	case http.MethodGet:
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")

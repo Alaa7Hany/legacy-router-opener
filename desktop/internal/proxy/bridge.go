@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"mime"
+	"net"
 	"net/http"
 	"strconv"
 	"strings"
@@ -38,12 +39,30 @@ func IsAllowedLoopbackOrigin(origin string, port int) bool {
 		strings.EqualFold(origin, "http://[::1]:"+portStr)
 }
 
-// CanonicalLoopbackHost normalizes the case of localhost:<port> while leaving IP hosts unchanged.
+// CanonicalLoopbackHost is the single normalizer for the loopback host behind
+// the Opener. It drops the port, keeps [::1] bracketed and folds any other host
+// to localhost so the Opener is always described one way.
 func CanonicalLoopbackHost(hostHeader string) string {
-	if strings.HasPrefix(strings.ToLower(hostHeader), "localhost:") {
-		return "localhost:" + hostHeader[len("localhost:"):]
+	trimmed := strings.TrimSpace(hostHeader)
+	if trimmed == "" {
+		return "localhost"
 	}
-	return hostHeader
+	host := trimmed
+	if strings.HasPrefix(trimmed, "[") {
+		if idx := strings.IndexByte(trimmed, ']'); idx >= 0 {
+			host = trimmed[:idx+1]
+		}
+	} else if h, _, err := net.SplitHostPort(trimmed); err == nil {
+		host = h
+	}
+	switch strings.ToLower(host) {
+	case "localhost":
+		return "localhost"
+	case "127.0.0.1", "[::1]":
+		return host
+	default:
+		return "localhost"
+	}
 }
 
 // ProxyHandler serves proxied router traffic, the read-only ping endpoint, and a redirect from /_bridge to the control origin.
@@ -64,7 +83,7 @@ func (s *Server) ProxyHandler() http.Handler {
 		case r.URL.Path == "/_bridge" || r.URL.Path == "/_bridge/":
 			if (r.Method == http.MethodGet || r.Method == http.MethodHead) && s.ControlPort() > 0 {
 				w.Header().Set("Cache-Control", "no-store")
-				targetURL := fmt.Sprintf("http://%s:%d/_bridge", resolveEffectiveProxyHost(r.Host), s.ControlPort())
+				targetURL := fmt.Sprintf("http://%s:%d/_bridge", CanonicalLoopbackHost(r.Host), s.ControlPort())
 				if r.URL.RawQuery != "" {
 					targetURL += "?" + r.URL.RawQuery
 				}
@@ -251,12 +270,6 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
-
-	if s.watchOpenerTab != nil && r.URL.Query().Get("opener") == "1" &&
-		r.Header.Get("Sec-Fetch-Site") == "same-origin" {
-		endTab := s.watchOpenerTab()
-		defer endTab()
-	}
 
 	ch := s.subscribeSSE()
 	defer s.unsubscribeSSE(ch)

@@ -3,7 +3,6 @@ package proxy
 import (
 	"fmt"
 	"io"
-	"net"
 	"net/http"
 	"strconv"
 	"strings"
@@ -61,7 +60,7 @@ func (s *Server) handleProxy(w http.ResponseWriter, r *http.Request) {
 	if targetPath == "" {
 		targetPath = "/"
 	}
-	effectiveProxyHost := resolveEffectiveProxyHost(r.Host)
+	effectiveProxyHost := CanonicalLoopbackHost(r.Host)
 
 	hasAuthorization := strings.TrimSpace(r.Header.Get("Authorization")) != ""
 	isStatic := r.Method == http.MethodGet && IsStaticAsset(targetPath)
@@ -194,28 +193,5 @@ func (s *Server) handleProxy(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(resp.StatusCode)
 	if r.Method != http.MethodHead && len(finalBytes) > 0 {
 		_, _ = w.Write(finalBytes)
-	}
-}
-
-func resolveEffectiveProxyHost(hostHeader string) string {
-	trimmed := strings.TrimSpace(hostHeader)
-	if trimmed == "" {
-		return "localhost"
-	}
-	host := trimmed
-	if strings.HasPrefix(trimmed, "[") {
-		if idx := strings.IndexByte(trimmed, ']'); idx >= 0 {
-			host = trimmed[:idx+1]
-		}
-	} else if h, _, err := net.SplitHostPort(trimmed); err == nil {
-		host = h
-	}
-	switch strings.ToLower(host) {
-	case "localhost":
-		return "localhost"
-	case "127.0.0.1", "[::1]":
-		return host
-	default:
-		return "localhost"
 	}
 }
