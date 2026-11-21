@@ -599,6 +599,183 @@ func TestResetClearsDeviceProfileStateThroughControlAPI(t *testing.T) {
 	}
 }
 
+func TestProfileSwitchThroughControlAPI(t *testing.T) {
+	// Two simulated devices let the switch be observed as a move from one
+	// endpoint to the other through the Opener's control origin only.
+	deviceA := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/login":
+			w.Header().Set("Set-Cookie", "DeviceSession=abc; Path=/")
+			w.Header().Set("Content-Type", "text/html")
+			_, _ = io.WriteString(w, "<html>login</html>")
+		case "/app.js":
+			w.Header().Set("Content-Type", "application/javascript")
+			w.Header().Set("Cache-Control", "public, max-age=3600")
+			_, _ = io.WriteString(w, "var device=1;")
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer deviceA.Close()
+	deviceB := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		_, _ = io.WriteString(w, "<html>device-b</html>")
+	}))
+	defer deviceB.Close()
+
+	// Bind both local origins before construction so the control port checked
+	// by CSRF protection is the port that actually serves the Opener.
+	proxyLn, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("bind proxy listener: %v", err)
+	}
+	controlLn, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("bind control listener: %v", err)
+	}
+	srv := NewServer(Options{
+		ProxyPort:       proxyLn.Addr().(*net.TCPAddr).Port,
+		ControlPort:     controlLn.Addr().(*net.TCPAddr).Port,
+		InitialTarget:   deviceA.URL,
+		InitialPresetID: "ilo",
+	})
+	startOn := func(ln net.Listener, handler http.Handler) *httptest.Server {
+		t.Helper()
+		ts := httptest.NewUnstartedServer(handler)
+		_ = ts.Listener.Close()
+		ts.Listener = ln
+		ts.Start()
+		t.Cleanup(ts.Close)
+		return ts
+	}
+	proxyTS := startOn(proxyLn, srv.ProxyHandler())
+	controlTS := startOn(controlLn, srv.ControlHandler())
+
+	readState := func() StateSnapshot {
+		t.Helper()
+		res, err := http.Get(controlTS.URL + "/_bridge/api/state")
+		if err != nil {
+			t.Fatalf("GET state: %v", err)
+		}
+		defer res.Body.Close()
+		if res.StatusCode != http.StatusOK {
+			t.Fatalf("GET state status = %d, want 200", res.StatusCode)
+		}
+		var snap StateSnapshot
+		if err := json.NewDecoder(res.Body).Decode(&snap); err != nil {
+			t.Fatalf("decode state: %v", err)
+		}
+		return snap
+	}
+
+	postConfig := func(target, preset string) *http.Response {
+		t.Helper()
+		body, err := json.Marshal(map[string]string{"target": target, "preset": preset})
+		if err != nil {
+			t.Fatal(err)
+		}
+		req, err := http.NewRequest(http.MethodPost, controlTS.URL+"/_bridge/api/config", bytes.NewReader(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Origin", controlTS.URL)
+		req.Header.Set("Sec-Fetch-Site", "same-origin")
+		res, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("POST config: %v", err)
+		}
+		return res
+	}
+
+	// Populate the cookie jar and static cache for the first device.
+	for _, path := range []string{"/login", "/app.js"} {
+		res, err := http.Get(proxyTS.URL + path)
+		if err != nil {
+			t.Fatalf("GET %s through proxy: %v", path, err)
+		}
+		_ = res.Body.Close()
+		if res.StatusCode != http.StatusOK {
+			t.Fatalf("GET %s status = %d, want 200", path, res.StatusCode)
+		}
+	}
+	initial := readState()
+	if initial.Target != deviceA.URL || initial.Preset != "ilo" || initial.MaxSockets != 2 {
+		t.Fatalf("unexpected initial device state: %+v", initial)
+	}
+	if initial.CachedAssets < 1 || initial.CookieCount < 1 {
+		t.Fatalf("expected a cached asset and saved cookie before switching: %+v", initial)
+	}
+
+	// Switching the Device profile on the same endpoint changes the socket cap,
+	// invalidates the cache and reseeds that device's cookies.
+	res := postConfig(deviceA.URL, "auto")
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("profile switch status = %d, want 200", res.StatusCode)
+	}
+	_ = res.Body.Close()
+	profileSwitched := readState()
+	if profileSwitched.Target != deviceA.URL || profileSwitched.Preset != "auto" || profileSwitched.MaxSockets != 4 {
+		t.Fatalf("unexpected state after profile switch: %+v", profileSwitched)
+	}
+	if profileSwitched.CachedAssets != 0 {
+		t.Fatalf("cached assets not invalidated on profile change: %+v", profileSwitched)
+	}
+	if profileSwitched.CookieCount < 4 {
+		t.Fatalf("device-specific cookies not reseeded on profile change: %+v", profileSwitched)
+	}
+
+	// Re-populate the cache, then move to a different device endpoint.
+	res, err = http.Get(proxyTS.URL + "/app.js")
+	if err != nil {
+		t.Fatalf("re-cache asset: %v", err)
+	}
+	_ = res.Body.Close()
+	if res.StatusCode != http.StatusOK || readState().CachedAssets < 1 {
+		t.Fatalf("expected a cached asset before endpoint switch: status=%d", res.StatusCode)
+	}
+	res = postConfig(deviceB.URL, "auto")
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("endpoint switch status = %d, want 200", res.StatusCode)
+	}
+	_ = res.Body.Close()
+	endpointSwitched := readState()
+	if endpointSwitched.Target != deviceB.URL || endpointSwitched.Preset != "auto" {
+		t.Fatalf("unexpected state after endpoint switch: %+v", endpointSwitched)
+	}
+	if endpointSwitched.CachedAssets != 0 {
+		t.Fatalf("cached assets not invalidated on endpoint change: %+v", endpointSwitched)
+	}
+	targetLogged := false
+	for _, line := range endpointSwitched.Logs {
+		if strings.Contains(line, "[TARGET]") && strings.Contains(line, deviceB.URL) {
+			targetLogged = true
+			break
+		}
+	}
+	if !targetLogged {
+		t.Fatalf("target log line missing for %s: %v", deviceB.URL, endpointSwitched.Logs)
+	}
+
+	// Validation and self-target checks still cross the same switch seam.
+	for _, tc := range []struct {
+		name   string
+		target string
+	}{
+		{name: "invalid", target: "bad host"},
+		{name: "self", target: fmt.Sprintf("http://127.0.0.1:%d", controlLn.Addr().(*net.TCPAddr).Port)},
+	} {
+		res := postConfig(tc.target, "")
+		_ = res.Body.Close()
+		if res.StatusCode != http.StatusBadRequest {
+			t.Fatalf("%s target status = %d, want 400", tc.name, res.StatusCode)
+		}
+	}
+	if still := readState(); still.Target != deviceB.URL {
+		t.Fatalf("rejected switch changed the active target: %+v", still)
+	}
+}
+
 func TestDesktopPagesUseBrowserLanguage(t *testing.T) {
 	// Use a port that refuses immediately, so the request reaches the app's own error page.
 	conn, err := net.Listen("tcp4", "127.0.0.1:0")
