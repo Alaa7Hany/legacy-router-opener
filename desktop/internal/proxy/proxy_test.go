@@ -24,6 +24,53 @@ import (
 	"github.com/alaa/legacyrouteropener/internal/upstream"
 )
 
+// boundControlPlane binds both loopback origins before constructing the Server,
+// so every advertised port matches a real listener and no post-construction
+// setter is needed.
+type boundControlPlane struct {
+	server      *Server
+	proxy       *httptest.Server
+	control     *httptest.Server
+	proxyPort   int
+	controlPort int
+}
+
+func newBoundControlPlane(t *testing.T, opts Options) *boundControlPlane {
+	t.Helper()
+	proxyLn, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	controlLn, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		_ = proxyLn.Close()
+		t.Fatal(err)
+	}
+	opts.ProxyPort = proxyLn.Addr().(*net.TCPAddr).Port
+	opts.ControlPort = controlLn.Addr().(*net.TCPAddr).Port
+	if opts.RequestedPort == 0 {
+		opts.RequestedPort = opts.ProxyPort
+	}
+	srv := NewServer(opts)
+
+	proxyTS := httptest.NewUnstartedServer(srv.ProxyHandler())
+	_ = proxyTS.Listener.Close()
+	proxyTS.Listener = proxyLn
+	proxyTS.Start()
+	controlTS := httptest.NewUnstartedServer(srv.ControlHandler())
+	_ = controlTS.Listener.Close()
+	controlTS.Listener = controlLn
+	controlTS.Start()
+	t.Cleanup(func() {
+		proxyTS.Close()
+		controlTS.Close()
+	})
+	return &boundControlPlane{
+		server: srv, proxy: proxyTS, control: controlTS,
+		proxyPort: opts.ProxyPort, controlPort: opts.ControlPort,
+	}
+}
+
 // readStateSnapshot reads the control-plane state through the HTTP seam.
 func readStateSnapshot(t *testing.T, controlURL string) StateSnapshot {
 	t.Helper()
@@ -261,18 +308,14 @@ func TestEndToEndLegacyTLS10AndStaticCaching(t *testing.T) {
 		}
 	}()
 
-	srv := NewServer(Options{
+	plane := newBoundControlPlane(t, Options{
 		InitialTarget:   "https://" + routerAddr,
 		InitialPresetID: "huawei-zte",
 		DetectedGateway: "192.168.1.1",
 	})
-	ts := httptest.NewServer(srv.ProxyHandler())
-	defer ts.Close()
-
-	var proxyPort int
-	_, portStr, _ := net.SplitHostPort(strings.TrimPrefix(ts.URL, "http://"))
-	_, _ = fmt.Sscanf(portStr, "%d", &proxyPort)
-	srv.SetProxyPort(proxyPort)
+	srv := plane.server
+	ts := plane.proxy
+	proxyPort := plane.proxyPort
 
 	httpClient := &http.Client{
 		CheckRedirect: func(*http.Request, []*http.Request) error {
@@ -355,13 +398,12 @@ func TestPlainHTTPFallbackOnCustomPort(t *testing.T) {
 	// Strip http:// so the proxy initially assumes TLS on this custom port and falls back on RecordHeaderError.
 	hostPort := strings.TrimPrefix(upstream.URL, "http://")
 
-	srv := NewServer(Options{
+	plane := newBoundControlPlane(t, Options{
 		InitialTarget:   hostPort,
 		InitialPresetID: "auto",
 	})
-	ts := httptest.NewServer(srv.ProxyHandler())
-	defer ts.Close()
-	srv.SetProxyPort(ts.Listener.Addr().(*net.TCPAddr).Port)
+	srv := plane.server
+	ts := plane.proxy
 
 	resp, err := http.Get(ts.URL + "/")
 	if err != nil {
@@ -426,17 +468,14 @@ func TestAbruptTLSCloseWithoutCloseNotify(t *testing.T) {
 }
 
 func TestBridgeControlAPIAndSessionReset(t *testing.T) {
-	srv := NewServer(Options{
-		ProxyPort:       8080,
+	plane := newBoundControlPlane(t, Options{
 		InitialTarget:   "192.168.1.1",
 		InitialPresetID: "auto",
 		DetectedGateway: "192.168.1.1",
 	})
+	srv := plane.server
 	srv.profile.activeJar().SaveCookiesFromHeaders([]string{"SessionID=stuck-session; Path=/"})
-
-	ts := httptest.NewServer(srv.ControlHandler())
-	defer ts.Close()
-	srv.SetControlPort(ts.Listener.Addr().(*net.TCPAddr).Port)
+	ts := plane.control
 
 	// 1. Launchpad HTML renders
 	res, err := http.Get(ts.URL + "/_bridge")
@@ -557,16 +596,12 @@ func TestResetClearsDeviceProfileStateThroughControlAPI(t *testing.T) {
 	}))
 	defer upstreamSrv.Close()
 
-	srv := NewServer(Options{
+	plane := newBoundControlPlane(t, Options{
 		InitialTarget:   upstreamSrv.URL,
 		InitialPresetID: "ilo",
 	})
-	proxyTS := httptest.NewServer(srv.ProxyHandler())
-	defer proxyTS.Close()
-	srv.SetProxyPort(proxyTS.Listener.Addr().(*net.TCPAddr).Port)
-	controlTS := httptest.NewServer(srv.ControlHandler())
-	defer controlTS.Close()
-	srv.SetControlPort(controlTS.Listener.Addr().(*net.TCPAddr).Port)
+	proxyTS := plane.proxy
+	controlTS := plane.control
 
 	// Drive real upstream traffic so the jar, static cache and telemetry all hold stale state.
 	primeProxyTraffic(t, proxyTS.URL, "/login", "/app.js")
@@ -926,10 +961,9 @@ func TestStaticCacheSafetyAndInvalidation(t *testing.T) {
 	}))
 	defer upstreamSrv.Close()
 
-	srv := NewServer(Options{InitialTarget: upstreamSrv.URL})
-	proxyTs := httptest.NewServer(srv.ProxyHandler())
-	defer proxyTs.Close()
-	srv.SetProxyPort(proxyTs.Listener.Addr().(*net.TCPAddr).Port)
+	plane := newBoundControlPlane(t, Options{InitialTarget: upstreamSrv.URL})
+	srv := plane.server
+	proxyTs := plane.proxy
 
 	for _, tc := range []string{"no-store", "private", "pragma", "set-cookie"} {
 		mode.Store(tc)
@@ -1048,10 +1082,9 @@ func TestQueryRedactionInLogsAndHostBoundaryRewrite(t *testing.T) {
 		http.Redirect(w, r, "http://"+r.Host+"/done?session=supersecret", http.StatusFound)
 	})
 
-	srv := NewServer(Options{InitialTarget: upstreamSrv.URL})
-	proxyTs := httptest.NewServer(srv.ProxyHandler())
-	defer proxyTs.Close()
-	srv.SetProxyPort(proxyTs.Listener.Addr().(*net.TCPAddr).Port)
+	plane := newBoundControlPlane(t, Options{InitialTarget: upstreamSrv.URL})
+	srv := plane.server
+	proxyTs := plane.proxy
 
 	client := &http.Client{
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },

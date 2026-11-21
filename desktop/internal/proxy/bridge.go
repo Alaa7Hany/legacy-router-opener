@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"mime"
+	"net"
 	"net/http"
 	"strconv"
 	"strings"
@@ -38,12 +39,45 @@ func IsAllowedLoopbackOrigin(origin string, port int) bool {
 		strings.EqualFold(origin, "http://[::1]:"+portStr)
 }
 
-// CanonicalLoopbackHost normalizes the case of localhost:<port> while leaving IP hosts unchanged.
+// CanonicalOpenerHost is the canonical loopback host used in every Opener URL.
+// It is the single place that names the host so identity cannot diverge.
+const CanonicalOpenerHost = "localhost"
+
+// CanonicalLoopbackHost is the single normalizer for the loopback host behind
+// the Opener. It drops the port, keeps [::1] bracketed and folds any other host
+// to the canonical host so the Opener is always described one way.
 func CanonicalLoopbackHost(hostHeader string) string {
-	if strings.HasPrefix(strings.ToLower(hostHeader), "localhost:") {
-		return "localhost:" + hostHeader[len("localhost:"):]
+	trimmed := strings.TrimSpace(hostHeader)
+	if trimmed == "" {
+		return CanonicalOpenerHost
 	}
-	return hostHeader
+	host := trimmed
+	if strings.HasPrefix(trimmed, "[") {
+		if idx := strings.IndexByte(trimmed, ']'); idx >= 0 {
+			host = trimmed[:idx+1]
+		}
+	} else if h, _, err := net.SplitHostPort(trimmed); err == nil {
+		host = h
+	}
+	switch strings.ToLower(host) {
+	case CanonicalOpenerHost:
+		return CanonicalOpenerHost
+	case "127.0.0.1", "[::1]":
+		return host
+	default:
+		return CanonicalOpenerHost
+	}
+}
+
+// OpenerURL is the single Opener URL shape shared by the control plane, the
+// quit handler and the lifetime module. The host is normalized so every caller
+// describes the same Opener, and the optional query is preserved verbatim.
+func OpenerURL(hostHeader string, port int, query string) string {
+	address := fmt.Sprintf("http://%s:%d/_bridge", CanonicalLoopbackHost(hostHeader), port)
+	if query != "" {
+		address += "?" + query
+	}
+	return address
 }
 
 // ProxyHandler serves proxied router traffic, the read-only ping endpoint, and a redirect from /_bridge to the control origin.
@@ -64,11 +98,7 @@ func (s *Server) ProxyHandler() http.Handler {
 		case r.URL.Path == "/_bridge" || r.URL.Path == "/_bridge/":
 			if (r.Method == http.MethodGet || r.Method == http.MethodHead) && s.ControlPort() > 0 {
 				w.Header().Set("Cache-Control", "no-store")
-				targetURL := fmt.Sprintf("http://%s:%d/_bridge", resolveEffectiveProxyHost(r.Host), s.ControlPort())
-				if r.URL.RawQuery != "" {
-					targetURL += "?" + r.URL.RawQuery
-				}
-				http.Redirect(w, r, targetURL, http.StatusFound)
+				http.Redirect(w, r, OpenerURL(r.Host, s.ControlPort(), r.URL.RawQuery), http.StatusFound)
 				return
 			}
 			http.NotFound(w, r)
@@ -251,12 +281,6 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
-
-	if s.watchOpenerTab != nil && r.URL.Query().Get("opener") == "1" &&
-		r.Header.Get("Sec-Fetch-Site") == "same-origin" {
-		endTab := s.watchOpenerTab()
-		defer endTab()
-	}
 
 	ch := s.subscribeSSE()
 	defer s.unsubscribeSSE(ch)
