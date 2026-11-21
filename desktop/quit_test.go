@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -26,6 +27,29 @@ func freeLoopbackPort(t *testing.T) int {
 	return port
 }
 
+// waitFor is the shared five-second / 20ms polling loop for launch-driven
+// Bridge tests. check returns the discovered value once it is observable.
+func waitFor[T any](t *testing.T, check func() (T, bool)) (T, bool) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	var zero T
+	for time.Now().Before(deadline) {
+		if value, ok := check(); ok {
+			return value, true
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	return zero, false
+}
+
+// failingListener makes http.Server.Serve return err on its first Accept.
+type failingListener struct {
+	net.Listener
+	err error
+}
+
+func (l failingListener) Accept() (net.Conn, error) { return nil, l.err }
+
 // launchBridge starts the Bridge through its real launch interface and waits
 // until the control origin advertises its identity. It returns the launch
 // result channel, a client and the control port discovered via ping.
@@ -44,23 +68,21 @@ func launchBridge(t *testing.T, port int) (<-chan error, *http.Client, string) {
 			return http.ErrUseLastResponse
 		},
 	}
-	controlPort := ""
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) && controlPort == "" {
+	controlPort, ok := waitFor(t, func() (string, bool) {
 		resp, err := client.Get(fmt.Sprintf("http://localhost:%d/_bridge/api/ping", port))
-		if err == nil {
-			cp := resp.Header.Get(controlPortField)
-			status := resp.StatusCode
-			proxy := resp.Header.Get("X-Legacy-Router-Proxy")
-			_ = resp.Body.Close()
-			if status == http.StatusOK && proxy == "1" && cp != "" {
-				controlPort = cp
-				break
-			}
+		if err != nil {
+			return "", false
 		}
-		time.Sleep(20 * time.Millisecond)
-	}
-	if controlPort == "" {
+		cp := resp.Header.Get(controlPortField)
+		status := resp.StatusCode
+		bridge := resp.Header.Get("X-Legacy-Router-Proxy")
+		_ = resp.Body.Close()
+		if status == http.StatusOK && bridge == "1" && cp != "" {
+			return cp, true
+		}
+		return "", false
+	})
+	if !ok {
 		t.Fatalf("bridge did not advertise a control port on %d", port)
 	}
 	return done, client, controlPort
@@ -296,32 +318,52 @@ func TestServeFailureReportsError(t *testing.T) {
 	}
 	t.Cleanup(app.shutdown)
 
-	client := &http.Client{Timeout: 2 * time.Second}
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
-		resp, err := client.Get(fmt.Sprintf("http://127.0.0.1:%d/_bridge/api/ping", port))
-		if err == nil {
-			_ = resp.Body.Close()
-			break
-		}
-		time.Sleep(20 * time.Millisecond)
+	// run binds its own listeners and offers no injection seam, so a real serve
+	// failure cannot be provoked through run without adding a new seam (which
+	// the spec forbids). Drive app.serve with a listener that fails on Accept,
+	// then assert through runResult the exact error string run would report.
+	cause := errors.New("listener failure")
+	listener, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
 	}
-	if len(app.process.controlListeners) == 0 {
-		t.Fatal("bridge holds no control listener")
-	}
-	_ = app.process.controlListeners[0].Close()
+	app.serve(app.control, failingListener{Listener: listener, err: cause})
 
+	reported := app.runResult()
+	want := "Router Page Opener stopped unexpectedly: " + cause.Error()
+	if reported == nil || reported.Error() != want {
+		t.Fatalf("serve failure report = %v, want %q", reported, want)
+	}
+}
+
+func TestRejectedOpenerStreamDoesNotRegisterTab(t *testing.T) {
+	port := freeLoopbackPort(t)
+	done, client, controlPort := launchBridge(t, port)
+
+	// A same-origin opener query on a host the control origin rejects must not
+	// register a tab, which would otherwise schedule the four-second stop.
+	req, err := http.NewRequest(http.MethodGet,
+		"http://127.0.0.1:"+controlPort+"/_bridge/events?opener=1", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Host = "evil.example:" + controlPort
+	req.Header.Set("Sec-Fetch-Site", "same-origin")
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("rejected opener stream = %d, want 404: %s", resp.StatusCode, body)
+	}
+
+	// Well past the reconnect grace: the bridge must still be running.
 	select {
-	case stopErr := <-app.process.stopSignal():
-		if stopErr == nil {
-			t.Fatal("serve failure sent no error on the stop signal")
-		}
-		if reported := stopError(stopErr); reported == nil ||
-			!strings.Contains(reported.Error(), "stopped unexpectedly") {
-			t.Fatalf("unexpected stop report: %v", reported)
-		}
-	case <-time.After(3 * time.Second):
-		t.Fatal("serve failure did not reach the stop signal")
+	case err := <-done:
+		t.Fatalf("rejected opener stream stopped the bridge: %v", err)
+	case <-time.After(tabReconnectGrace + time.Second):
 	}
 }
 

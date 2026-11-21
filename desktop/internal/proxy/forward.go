@@ -115,7 +115,7 @@ func (s *Server) handleProxy(w http.ResponseWriter, r *http.Request) {
 		if openerPort <= 0 {
 			openerPort = proxyPort
 		}
-		openerURL := fmt.Sprintf("http://%s:%d/_bridge", effectiveProxyHost, openerPort)
+		openerURL := OpenerURL(effectiveProxyHost, openerPort, "")
 		language := bridgeui.SelectLanguage("", r.Header.Get("Accept-Language"))
 		_ = bridgeui.WriteError(w, language, forward.target, err.Error(), openerURL)
 		return

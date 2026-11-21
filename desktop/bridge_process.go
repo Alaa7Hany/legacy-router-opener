@@ -10,6 +10,8 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	"github.com/alaa/legacyrouteropener/internal/proxy"
 )
 
 const (
@@ -19,6 +21,10 @@ const (
 	pingPath               = "/_bridge/api/ping"
 	requestedPortField     = "X-Legacy-Router-Requested-Port"
 	controlPortField       = "X-Legacy-Router-Control-Port"
+
+	// openerHost never varies; it is the canonical host named by the one
+	// normalizer the control plane and this lifetime module share.
+	openerHost = proxy.CanonicalOpenerHost
 )
 
 // bridgeIdentity is the Bridge's immutable local address, resolved before any
@@ -27,7 +33,6 @@ type bridgeIdentity struct {
 	proxyPort     int
 	controlPort   int
 	requestedPort int
-	openerHost    string
 }
 
 // bridgeProcess owns port fallback, both local origins, instance reuse and
@@ -68,7 +73,6 @@ func newBridgeProcess(requestedPort int, startupTimeout time.Duration) (*bridgeP
 		identity: bridgeIdentity{
 			proxyPort:     port,
 			requestedPort: requestedPort,
-			openerHost:    "localhost",
 		},
 		stopCh:   make(chan error, 1),
 		stopping: make(chan struct{}),
@@ -106,15 +110,35 @@ func (p *bridgeProcess) stopSignal() <-chan error {
 	return p.stopCh
 }
 
+// streamStop is closed when shutdown begins, ending both event streams.
+func (p *bridgeProcess) streamStop() <-chan struct{} {
+	return p.stopping
+}
+
+// proxyPort, controlPort and requestedPort expose the immutable identity
+// without letting callers reach into the identity value itself.
+func (p *bridgeProcess) proxyPort() int { return p.identity.proxyPort }
+
+func (p *bridgeProcess) controlPort() int { return p.identity.controlPort }
+
+func (p *bridgeProcess) requestedPort() int { return p.identity.requestedPort }
+
+func (p *bridgeProcess) reusedBridge() bool { return p.reused }
+
+// listeners returns the proxy and control bindings this process owns.
+func (p *bridgeProcess) listeners() (proxyBindings, controlBindings []net.Listener) {
+	return p.proxyListeners, p.controlListeners
+}
+
 // openerURL is the canonical Opener address advertised on this Bridge.
 func (p *bridgeProcess) openerURL() string {
-	return fmt.Sprintf("http://%s:%d/_bridge", p.identity.openerHost, p.identity.controlPort)
+	return proxy.OpenerURL(openerHost, p.identity.controlPort, "")
 }
 
 // launchURL is the address handed to the browser on startup.
 func (p *bridgeProcess) launchURL(openRouter bool) string {
 	if openRouter {
-		return fmt.Sprintf("http://%s:%d/", p.identity.openerHost, p.identity.proxyPort)
+		return fmt.Sprintf("http://%s:%d/", openerHost, p.identity.proxyPort)
 	}
 	return p.openerURL()
 }
@@ -139,15 +163,27 @@ func (p *bridgeProcess) registerOpener() func() {
 	return p.tabs.connect()
 }
 
-// close releases tab state, ends both event streams and any listeners held
-// before the servers took over. Ending the streams first lets shutdown finish.
-func (p *bridgeProcess) close() {
+// endStreams releases tab state and ends both event streams so a server
+// shutdown can finish waiting on active connections.
+func (p *bridgeProcess) endStreams() {
 	if p.tabs != nil {
 		p.tabs.close()
 	}
 	p.stoppingOnce.Do(func() { close(p.stopping) })
+}
+
+// closeBoundListeners cleans up any listener a server did not close itself.
+// http.Server.Shutdown closes the listeners handed to Serve, so this runs only
+// after the servers are gone (or when shutdown never started them).
+func (p *bridgeProcess) closeBoundListeners() {
 	closeListeners(p.proxyListeners)
 	closeListeners(p.controlListeners)
+}
+
+// close is the full cleanup for paths where no server was ever started.
+func (p *bridgeProcess) close() {
+	p.endStreams()
+	p.closeBoundListeners()
 }
 
 func validProxyPort(port int) int {

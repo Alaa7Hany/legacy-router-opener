@@ -131,30 +131,28 @@ func TestLaunchProbesIdentityHeadersAndReusesExistingBridge(t *testing.T) {
 			return http.ErrUseLastResponse
 		},
 	}
-	var ping *http.Response
-	fallbackPort := 0
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) && fallbackPort == 0 {
+	type discovered struct {
+		ping *http.Response
+		port int
+	}
+	found, ok := waitFor(t, func() (discovered, bool) {
 		for port := preferredPort + 1; port <= min(preferredPort+maxPortAttempts-1, 65535); port++ {
 			resp, err := client.Get(fmt.Sprintf("http://localhost:%d/_bridge/api/ping", port))
 			if err == nil && resp.StatusCode == http.StatusOK &&
 				resp.Header.Get("X-Legacy-Router-Proxy") == "1" &&
 				resp.Header.Get(requestedPortField) == strconv.Itoa(preferredPort) {
-				ping = resp
-				fallbackPort = port
-				break
+				return discovered{ping: resp, port: port}, true
 			}
 			if resp != nil {
 				_ = resp.Body.Close()
 			}
 		}
-		if fallbackPort == 0 {
-			time.Sleep(20 * time.Millisecond)
-		}
-	}
-	if ping == nil {
+		return discovered{}, false
+	})
+	if !ok {
 		t.Fatalf("first bridge did not advertise the preferred port on any fallback port after %d", preferredPort)
 	}
+	ping, fallbackPort := found.ping, found.port
 	defer ping.Body.Close()
 	if got := ping.Header.Get("X-Legacy-Router-Proxy"); got != "1" {
 		t.Fatalf("X-Legacy-Router-Proxy = %q, want 1", got)

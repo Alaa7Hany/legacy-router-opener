@@ -39,13 +39,17 @@ func IsAllowedLoopbackOrigin(origin string, port int) bool {
 		strings.EqualFold(origin, "http://[::1]:"+portStr)
 }
 
+// CanonicalOpenerHost is the canonical loopback host used in every Opener URL.
+// It is the single place that names the host so identity cannot diverge.
+const CanonicalOpenerHost = "localhost"
+
 // CanonicalLoopbackHost is the single normalizer for the loopback host behind
 // the Opener. It drops the port, keeps [::1] bracketed and folds any other host
-// to localhost so the Opener is always described one way.
+// to the canonical host so the Opener is always described one way.
 func CanonicalLoopbackHost(hostHeader string) string {
 	trimmed := strings.TrimSpace(hostHeader)
 	if trimmed == "" {
-		return "localhost"
+		return CanonicalOpenerHost
 	}
 	host := trimmed
 	if strings.HasPrefix(trimmed, "[") {
@@ -56,13 +60,24 @@ func CanonicalLoopbackHost(hostHeader string) string {
 		host = h
 	}
 	switch strings.ToLower(host) {
-	case "localhost":
-		return "localhost"
+	case CanonicalOpenerHost:
+		return CanonicalOpenerHost
 	case "127.0.0.1", "[::1]":
 		return host
 	default:
-		return "localhost"
+		return CanonicalOpenerHost
 	}
+}
+
+// OpenerURL is the single Opener URL shape shared by the control plane, the
+// quit handler and the lifetime module. The host is normalized so every caller
+// describes the same Opener, and the optional query is preserved verbatim.
+func OpenerURL(hostHeader string, port int, query string) string {
+	address := fmt.Sprintf("http://%s:%d/_bridge", CanonicalLoopbackHost(hostHeader), port)
+	if query != "" {
+		address += "?" + query
+	}
+	return address
 }
 
 // ProxyHandler serves proxied router traffic, the read-only ping endpoint, and a redirect from /_bridge to the control origin.
@@ -83,11 +98,7 @@ func (s *Server) ProxyHandler() http.Handler {
 		case r.URL.Path == "/_bridge" || r.URL.Path == "/_bridge/":
 			if (r.Method == http.MethodGet || r.Method == http.MethodHead) && s.ControlPort() > 0 {
 				w.Header().Set("Cache-Control", "no-store")
-				targetURL := fmt.Sprintf("http://%s:%d/_bridge", CanonicalLoopbackHost(r.Host), s.ControlPort())
-				if r.URL.RawQuery != "" {
-					targetURL += "?" + r.URL.RawQuery
-				}
-				http.Redirect(w, r, targetURL, http.StatusFound)
+				http.Redirect(w, r, OpenerURL(r.Host, s.ControlPort(), r.URL.RawQuery), http.StatusFound)
 				return
 			}
 			http.NotFound(w, r)
