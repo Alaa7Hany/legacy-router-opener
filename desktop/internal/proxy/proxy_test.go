@@ -24,6 +24,68 @@ import (
 	"github.com/alaa/legacyrouteropener/internal/upstream"
 )
 
+// readStateSnapshot reads the control-plane state through the HTTP seam.
+func readStateSnapshot(t *testing.T, controlURL string) StateSnapshot {
+	t.Helper()
+	res, err := http.Get(controlURL + "/_bridge/api/state")
+	if err != nil {
+		t.Fatalf("GET /_bridge/api/state: %v", err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("GET /_bridge/api/state status = %d, want 200", res.StatusCode)
+	}
+	var snap StateSnapshot
+	if err := json.NewDecoder(res.Body).Decode(&snap); err != nil {
+		t.Fatalf("decode state snapshot: %v", err)
+	}
+	return snap
+}
+
+// primeProxyTraffic drives real traffic through the proxy so the device jar,
+// static cache and transport telemetry hold observable state.
+func primeProxyTraffic(t *testing.T, proxyURL string, paths ...string) {
+	t.Helper()
+	for _, path := range paths {
+		res, err := http.Get(proxyURL + path)
+		if err != nil {
+			t.Fatalf("GET %s through proxy: %v", path, err)
+		}
+		_ = res.Body.Close()
+		if res.StatusCode != http.StatusOK {
+			t.Fatalf("GET %s through proxy status = %d, want 200", path, res.StatusCode)
+		}
+	}
+}
+
+// postControlJSON posts a control-origin request with the JSON content type and
+// CSRF headers the control handler requires.
+func postControlJSON(t *testing.T, controlURL, path string, body []byte) *http.Response {
+	t.Helper()
+	req, err := http.NewRequest(http.MethodPost, controlURL+path, bytes.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Origin", controlURL)
+	req.Header.Set("Sec-Fetch-Site", "same-origin")
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("POST %s: %v", path, err)
+	}
+	return res
+}
+
+// postConfigRequest switches target/preset through the control-origin config API.
+func postConfigRequest(t *testing.T, controlURL, target, preset string) *http.Response {
+	t.Helper()
+	body, err := json.Marshal(map[string]string{"target": target, "preset": preset})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return postControlJSON(t, controlURL, "/_bridge/api/config", body)
+}
+
 func TestSessionCookieJarAndSanitization(t *testing.T) {
 	jar := NewSessionCookieJar(true)
 	if hdr := jar.GetMergedCookieHeader(""); !strings.Contains(hdr, "FirstMenu=Admin_0") {
@@ -376,17 +438,6 @@ func TestBridgeControlAPIAndSessionReset(t *testing.T) {
 	defer ts.Close()
 	srv.SetControlPort(ts.Listener.Addr().(*net.TCPAddr).Port)
 
-	postJSON := func(path, body string) (*http.Response, error) {
-		req, err := http.NewRequest(http.MethodPost, ts.URL+path, strings.NewReader(body))
-		if err != nil {
-			return nil, err
-		}
-		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("Origin", ts.URL)
-		req.Header.Set("Sec-Fetch-Site", "same-origin")
-		return http.DefaultClient.Do(req)
-	}
-
 	// 1. Launchpad HTML renders
 	res, err := http.Get(ts.URL + "/_bridge")
 	if err != nil {
@@ -416,20 +467,14 @@ func TestBridgeControlAPIAndSessionReset(t *testing.T) {
 	}
 
 	// 3. Invalid config rejected
-	badRes, err := postJSON("/_bridge/api/config", `{"target":"bad host"}`)
-	if err != nil {
-		t.Fatalf("POST /_bridge/api/config failed: %v", err)
-	}
+	badRes := postControlJSON(t, ts.URL, "/_bridge/api/config", []byte(`{"target":"bad host"}`))
 	_ = badRes.Body.Close()
 	if badRes.StatusCode != http.StatusBadRequest {
 		t.Fatalf("expected 400 for whitespace target, got %d", badRes.StatusCode)
 	}
 
 	// 4. Valid config switches target and preset (HPE iLO caps sockets to 2, disables Huawei cookies)
-	cfgRes, err := postJSON("/_bridge/api/config", `{"target":"10.10.10.50:443","preset":"ilo"}`)
-	if err != nil {
-		t.Fatalf("POST /_bridge/api/config failed: %v", err)
-	}
+	cfgRes := postControlJSON(t, ts.URL, "/_bridge/api/config", []byte(`{"target":"10.10.10.50:443","preset":"ilo"}`))
 	var snap StateSnapshot
 	_ = json.NewDecoder(cfgRes.Body).Decode(&snap)
 	_ = cfgRes.Body.Close()
@@ -472,10 +517,7 @@ func TestBridgeControlAPIAndSessionReset(t *testing.T) {
 		t.Fatalf("expected a saved cookie before reset, got %+v", beforeReset)
 	}
 
-	resetRes, err := postJSON("/_bridge/api/reset", "")
-	if err != nil {
-		t.Fatalf("POST /_bridge/api/reset failed: %v", err)
-	}
+	resetRes := postControlJSON(t, ts.URL, "/_bridge/api/reset", nil)
 	_ = resetRes.Body.Close()
 	if resetRes.Header.Get("Clear-Site-Data") != `"cookies"` {
 		t.Fatalf("expected Clear-Site-Data header, got %q", resetRes.Header.Get("Clear-Site-Data"))
@@ -526,36 +568,10 @@ func TestResetClearsDeviceProfileStateThroughControlAPI(t *testing.T) {
 	defer controlTS.Close()
 	srv.SetControlPort(controlTS.Listener.Addr().(*net.TCPAddr).Port)
 
-	readState := func() StateSnapshot {
-		t.Helper()
-		res, err := http.Get(controlTS.URL + "/_bridge/api/state")
-		if err != nil {
-			t.Fatalf("GET state failed: %v", err)
-		}
-		defer res.Body.Close()
-		if res.StatusCode != http.StatusOK {
-			t.Fatalf("GET state status = %d, want 200", res.StatusCode)
-		}
-		var snap StateSnapshot
-		if err := json.NewDecoder(res.Body).Decode(&snap); err != nil {
-			t.Fatalf("decode state: %v", err)
-		}
-		return snap
-	}
-
 	// Drive real upstream traffic so the jar, static cache and telemetry all hold stale state.
-	for _, path := range []string{"/login", "/app.js"} {
-		res, err := http.Get(proxyTS.URL + path)
-		if err != nil {
-			t.Fatalf("GET %s through proxy failed: %v", path, err)
-		}
-		_ = res.Body.Close()
-		if res.StatusCode != http.StatusOK {
-			t.Fatalf("GET %s through proxy status = %d, want 200", path, res.StatusCode)
-		}
-	}
+	primeProxyTraffic(t, proxyTS.URL, "/login", "/app.js")
 
-	before := readState()
+	before := readStateSnapshot(t, controlTS.URL)
 	if before.CookieCount < 1 {
 		t.Fatalf("expected a saved session cookie before reset, got %+v", before)
 	}
@@ -566,16 +582,7 @@ func TestResetClearsDeviceProfileStateThroughControlAPI(t *testing.T) {
 		t.Fatalf("expected live upstream transport telemetry before reset, got %+v", before.TLS)
 	}
 
-	req, err := http.NewRequest(http.MethodPost, controlTS.URL+"/_bridge/api/reset", strings.NewReader(""))
-	if err != nil {
-		t.Fatal(err)
-	}
-	req.Header.Set("Origin", controlTS.URL)
-	req.Header.Set("Sec-Fetch-Site", "same-origin")
-	resetRes, err := http.DefaultClient.Do(req)
-	if err != nil {
-		t.Fatalf("POST reset failed: %v", err)
-	}
+	resetRes := postControlJSON(t, controlTS.URL, "/_bridge/api/reset", nil)
 	_ = resetRes.Body.Close()
 	if resetRes.StatusCode != http.StatusOK {
 		t.Fatalf("POST reset status = %d, want 200", resetRes.StatusCode)
@@ -587,7 +594,7 @@ func TestResetClearsDeviceProfileStateThroughControlAPI(t *testing.T) {
 		t.Fatalf("missing session cookie eviction header, got %q", got)
 	}
 
-	after := readState()
+	after := readStateSnapshot(t, controlTS.URL)
 	if after.CookieCount != 0 {
 		t.Fatalf("cookie count after reset = %d, want 0", after.CookieCount)
 	}
@@ -651,55 +658,10 @@ func TestProfileSwitchThroughControlAPI(t *testing.T) {
 	proxyTS := startOn(proxyLn, srv.ProxyHandler())
 	controlTS := startOn(controlLn, srv.ControlHandler())
 
-	readState := func() StateSnapshot {
-		t.Helper()
-		res, err := http.Get(controlTS.URL + "/_bridge/api/state")
-		if err != nil {
-			t.Fatalf("GET state: %v", err)
-		}
-		defer res.Body.Close()
-		if res.StatusCode != http.StatusOK {
-			t.Fatalf("GET state status = %d, want 200", res.StatusCode)
-		}
-		var snap StateSnapshot
-		if err := json.NewDecoder(res.Body).Decode(&snap); err != nil {
-			t.Fatalf("decode state: %v", err)
-		}
-		return snap
-	}
-
-	postConfig := func(target, preset string) *http.Response {
-		t.Helper()
-		body, err := json.Marshal(map[string]string{"target": target, "preset": preset})
-		if err != nil {
-			t.Fatal(err)
-		}
-		req, err := http.NewRequest(http.MethodPost, controlTS.URL+"/_bridge/api/config", bytes.NewReader(body))
-		if err != nil {
-			t.Fatal(err)
-		}
-		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("Origin", controlTS.URL)
-		req.Header.Set("Sec-Fetch-Site", "same-origin")
-		res, err := http.DefaultClient.Do(req)
-		if err != nil {
-			t.Fatalf("POST config: %v", err)
-		}
-		return res
-	}
-
 	// Populate the cookie jar and static cache for the first device.
-	for _, path := range []string{"/login", "/app.js"} {
-		res, err := http.Get(proxyTS.URL + path)
-		if err != nil {
-			t.Fatalf("GET %s through proxy: %v", path, err)
-		}
-		_ = res.Body.Close()
-		if res.StatusCode != http.StatusOK {
-			t.Fatalf("GET %s status = %d, want 200", path, res.StatusCode)
-		}
-	}
-	initial := readState()
+	primeProxyTraffic(t, proxyTS.URL, "/login", "/app.js")
+
+	initial := readStateSnapshot(t, controlTS.URL)
 	if initial.Target != deviceA.URL || initial.Preset != "ilo" || initial.MaxSockets != 2 {
 		t.Fatalf("unexpected initial device state: %+v", initial)
 	}
@@ -709,12 +671,12 @@ func TestProfileSwitchThroughControlAPI(t *testing.T) {
 
 	// Switching the Device profile on the same endpoint changes the socket cap,
 	// invalidates the cache and reseeds that device's cookies.
-	res := postConfig(deviceA.URL, "auto")
+	res := postConfigRequest(t, controlTS.URL, deviceA.URL, "auto")
 	if res.StatusCode != http.StatusOK {
 		t.Fatalf("profile switch status = %d, want 200", res.StatusCode)
 	}
 	_ = res.Body.Close()
-	profileSwitched := readState()
+	profileSwitched := readStateSnapshot(t, controlTS.URL)
 	if profileSwitched.Target != deviceA.URL || profileSwitched.Preset != "auto" || profileSwitched.MaxSockets != 4 {
 		t.Fatalf("unexpected state after profile switch: %+v", profileSwitched)
 	}
@@ -726,20 +688,16 @@ func TestProfileSwitchThroughControlAPI(t *testing.T) {
 	}
 
 	// Re-populate the cache, then move to a different device endpoint.
-	res, err = http.Get(proxyTS.URL + "/app.js")
-	if err != nil {
-		t.Fatalf("re-cache asset: %v", err)
+	primeProxyTraffic(t, proxyTS.URL, "/app.js")
+	if readStateSnapshot(t, controlTS.URL).CachedAssets < 1 {
+		t.Fatalf("expected a cached asset before endpoint switch")
 	}
-	_ = res.Body.Close()
-	if res.StatusCode != http.StatusOK || readState().CachedAssets < 1 {
-		t.Fatalf("expected a cached asset before endpoint switch: status=%d", res.StatusCode)
-	}
-	res = postConfig(deviceB.URL, "auto")
+	res = postConfigRequest(t, controlTS.URL, deviceB.URL, "auto")
 	if res.StatusCode != http.StatusOK {
 		t.Fatalf("endpoint switch status = %d, want 200", res.StatusCode)
 	}
 	_ = res.Body.Close()
-	endpointSwitched := readState()
+	endpointSwitched := readStateSnapshot(t, controlTS.URL)
 	if endpointSwitched.Target != deviceB.URL || endpointSwitched.Preset != "auto" {
 		t.Fatalf("unexpected state after endpoint switch: %+v", endpointSwitched)
 	}
@@ -765,13 +723,13 @@ func TestProfileSwitchThroughControlAPI(t *testing.T) {
 		{name: "invalid", target: "bad host"},
 		{name: "self", target: fmt.Sprintf("http://127.0.0.1:%d", controlLn.Addr().(*net.TCPAddr).Port)},
 	} {
-		res := postConfig(tc.target, "")
+		res := postConfigRequest(t, controlTS.URL, tc.target, "")
 		_ = res.Body.Close()
 		if res.StatusCode != http.StatusBadRequest {
 			t.Fatalf("%s target status = %d, want 400", tc.name, res.StatusCode)
 		}
 	}
-	if still := readState(); still.Target != deviceB.URL {
+	if still := readStateSnapshot(t, controlTS.URL); still.Target != deviceB.URL {
 		t.Fatalf("rejected switch changed the active target: %+v", still)
 	}
 }

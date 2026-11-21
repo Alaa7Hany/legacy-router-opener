@@ -185,8 +185,9 @@ func (s *Server) handleControl(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON payload"})
 			return
 		}
-		// Switching and reset cross the same device-profile module seam.
-		if err := s.profile.switchTo(req.Target, req.Preset); err != nil {
+		// Switching and reset cross the same device-profile module seam; the
+		// public UpdateTarget method is the production entry point for switches.
+		if err := s.UpdateTarget(req.Target, req.Preset); err != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]string{
 				"error":    err.Error(),
 				"errorKey": classifyTargetError(err),

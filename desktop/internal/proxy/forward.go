@@ -51,7 +51,7 @@ type cachedAsset struct {
 }
 
 func (s *Server) handleProxy(w http.ResponseWriter, r *http.Request) {
-	target, preset := s.profile.forwardState()
+	forward := s.profile.forwardState()
 	s.mu.RLock()
 	proxyPort := s.proxyPort
 	controlPort := s.controlPort
@@ -66,7 +66,7 @@ func (s *Server) handleProxy(w http.ResponseWriter, r *http.Request) {
 	hasAuthorization := strings.TrimSpace(r.Header.Get("Authorization")) != ""
 	isStatic := r.Method == http.MethodGet && IsStaticAsset(targetPath)
 	canUseStaticCache := isStatic && !hasAuthorization
-	cacheKey := fmt.Sprintf("%s|%s|%s", target, effectiveProxyHost, targetPath)
+	cacheKey := fmt.Sprintf("%s|%s|%s", forward.target, effectiveProxyHost, targetPath)
 	if canUseStaticCache {
 		cached, hit := s.profile.cachedAsset(cacheKey)
 		if hit {
@@ -98,8 +98,8 @@ func (s *Server) handleProxy(w http.ResponseWriter, r *http.Request) {
 	jar := s.profile.activeJar()
 	mergedCookies := jar.GetMergedCookieHeader(r.Header.Get("Cookie"))
 
-	s.appendLog(fmt.Sprintf("[FWD] -> %s%s", upstream.RedactQuery(target), safePath))
-	resp, usedEndpoint, err := s.profile.sendRequest(r.Context(), target, preset, upstream.UpstreamRequest{
+	s.appendLog(fmt.Sprintf("[FWD] -> %s%s", upstream.RedactQuery(forward.target), safePath))
+	resp, usedEndpoint, err := s.profile.sendRequest(r.Context(), upstream.UpstreamRequest{
 		Method:  r.Method,
 		Path:    targetPath,
 		Headers: r.Header,
@@ -118,7 +118,7 @@ func (s *Server) handleProxy(w http.ResponseWriter, r *http.Request) {
 		}
 		openerURL := fmt.Sprintf("http://%s:%d/_bridge", effectiveProxyHost, openerPort)
 		language := bridgeui.SelectLanguage("", r.Header.Get("Accept-Language"))
-		_ = bridgeui.WriteError(w, language, target, err.Error(), openerURL)
+		_ = bridgeui.WriteError(w, language, forward.target, err.Error(), openerURL)
 		return
 	}
 
@@ -160,7 +160,7 @@ func (s *Server) handleProxy(w http.ResponseWriter, r *http.Request) {
 			if len(values) > 0 {
 				loc = values[0]
 			}
-			rewrittenLoc := RewriteRedirectLocation(loc, usedEndpoint.Host, proxyPort, effectiveProxyHost, preset.RewriteSingleLabelHost)
+			rewrittenLoc := RewriteRedirectLocation(loc, usedEndpoint.Host, proxyPort, effectiveProxyHost, forward.preset.RewriteSingleLabelHost)
 			outHeaders.Set("Location", rewrittenLoc)
 			s.appendLog(fmt.Sprintf("[REDIRECT] %s -> %s", upstream.RedactQuery(loc), upstream.RedactQuery(rewrittenLoc)))
 			continue

@@ -33,6 +33,14 @@ type profileSnapshot struct {
 	TLS          upstream.TLSInfo
 }
 
+// forwardConfig is one coherent snapshot of the target and Device profile used
+// to serve a proxied request. Reading both under a single lock keeps cache keys,
+// logs and redirect rewriting consistent with each other.
+type forwardConfig struct {
+	target string
+	preset upstream.HardwarePreset
+}
+
 func newDeviceProfile(target string, preset upstream.HardwarePreset, proxyPort, controlPort int, log func(string)) *deviceProfile {
 	p := &deviceProfile{
 		target:      target,
@@ -100,8 +108,8 @@ func (p *deviceProfile) checkTargetAllowed(rawTarget string) error {
 	return p.client.CheckTargetAllowed(context.Background(), ep)
 }
 
-func (p *deviceProfile) setBlockedLoopbackPorts(ports ...int) {
-	p.client.SetBlockedLoopbackPorts(ports...)
+func (p *deviceProfile) setBlockedLoopbackPorts(proxyPort, controlPort int) {
+	p.client.SetBlockedLoopbackPorts(proxyPort, controlPort)
 }
 
 // activeJar returns the cookie jar for the active target, creating it on demand.
@@ -123,9 +131,18 @@ func (p *deviceProfile) snapshot() profileSnapshot {
 	target := p.target
 	preset := p.preset
 	cacheCount := len(p.staticCache)
+	// A readout must not create a jar or re-seed cookies: only report a jar that
+	// already exists for the active target.
+	var jar *SessionCookieJar
+	if existing, ok := p.jars[upstream.ParseEndpoint(target).BareHost()]; ok {
+		jar = existing
+	}
 	p.mu.RUnlock()
 
-	cookieCount := len(p.activeJar().Snapshot())
+	cookieCount := 0
+	if jar != nil {
+		cookieCount = len(jar.Snapshot())
+	}
 	return profileSnapshot{
 		Target:       target,
 		Preset:       preset,
@@ -136,11 +153,12 @@ func (p *deviceProfile) snapshot() profileSnapshot {
 	}
 }
 
-// forwardState returns the target and Device profile used to serve device traffic.
-func (p *deviceProfile) forwardState() (string, upstream.HardwarePreset) {
+// forwardState returns one coherent snapshot of the target and Device profile
+// used to serve device traffic.
+func (p *deviceProfile) forwardState() forwardConfig {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
-	return p.target, p.preset
+	return forwardConfig{target: p.target, preset: p.preset}
 }
 
 func (p *deviceProfile) cachedAsset(key string) (cachedAsset, bool) {
@@ -158,6 +176,7 @@ func (p *deviceProfile) cacheAsset(key string, asset cachedAsset) {
 	}
 }
 
-func (p *deviceProfile) sendRequest(ctx context.Context, target string, preset upstream.HardwarePreset, req upstream.UpstreamRequest, cookieHeader string) (upstream.UpstreamResponse, upstream.Endpoint, error) {
-	return p.client.SendRequest(ctx, target, preset, req, cookieHeader)
+func (p *deviceProfile) sendRequest(ctx context.Context, req upstream.UpstreamRequest, cookieHeader string) (upstream.UpstreamResponse, upstream.Endpoint, error) {
+	forward := p.forwardState()
+	return p.client.SendRequest(ctx, forward.target, forward.preset, req, cookieHeader)
 }
