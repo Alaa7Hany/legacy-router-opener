@@ -198,11 +198,7 @@ func (s *Server) handleControl(w http.ResponseWriter, r *http.Request) {
 		if !s.requireControlCSRF(w, r, false) {
 			return
 		}
-		evicted := s.activeJar().Clear()
-		s.mu.Lock()
-		s.staticCache = make(map[string]cachedAsset)
-		s.mu.Unlock()
-		s.client.ResetState()
+		evicted := s.profile.reset()
 
 		for _, key := range evicted {
 			w.Header().Add("Set-Cookie", fmt.Sprintf("%s=; Path=/; Max-Age=0", key))

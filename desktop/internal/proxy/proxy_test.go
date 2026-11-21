@@ -370,7 +370,7 @@ func TestBridgeControlAPIAndSessionReset(t *testing.T) {
 		InitialPresetID: "auto",
 		DetectedGateway: "192.168.1.1",
 	})
-	srv.activeJar().SaveCookiesFromHeaders([]string{"SessionID=stuck-session; Path=/"})
+	srv.profile.activeJar().SaveCookiesFromHeaders([]string{"SessionID=stuck-session; Path=/"})
 
 	ts := httptest.NewServer(srv.ControlHandler())
 	defer ts.Close()
@@ -460,7 +460,18 @@ func TestBridgeControlAPIAndSessionReset(t *testing.T) {
 	}
 
 	// 5. Session reset clears cookies & emits browser eviction headers
-	srv.activeJar().SaveCookiesFromHeaders([]string{"iLOSession=abc; Path=/"})
+	srv.profile.activeJar().SaveCookiesFromHeaders([]string{"iLOSession=abc; Path=/"})
+	stateBefore, err := http.Get(ts.URL + "/_bridge/api/state")
+	if err != nil {
+		t.Fatalf("GET /_bridge/api/state failed: %v", err)
+	}
+	var beforeReset StateSnapshot
+	_ = json.NewDecoder(stateBefore.Body).Decode(&beforeReset)
+	_ = stateBefore.Body.Close()
+	if beforeReset.CookieCount == 0 {
+		t.Fatalf("expected a saved cookie before reset, got %+v", beforeReset)
+	}
+
 	resetRes, err := postJSON("/_bridge/api/reset", "")
 	if err != nil {
 		t.Fatalf("POST /_bridge/api/reset failed: %v", err)
@@ -471,6 +482,120 @@ func TestBridgeControlAPIAndSessionReset(t *testing.T) {
 	}
 	if setCookies := strings.Join(resetRes.Header.Values("Set-Cookie"), "\n"); !strings.Contains(setCookies, "iLOSession=; Path=/; Max-Age=0") {
 		t.Fatalf("expected Max-Age=0 eviction header for iLOSession, got %q", setCookies)
+	}
+
+	stateAfter, err := http.Get(ts.URL + "/_bridge/api/state")
+	if err != nil {
+		t.Fatalf("GET /_bridge/api/state after reset failed: %v", err)
+	}
+	var afterReset StateSnapshot
+	_ = json.NewDecoder(stateAfter.Body).Decode(&afterReset)
+	_ = stateAfter.Body.Close()
+	if afterReset.CookieCount != 0 {
+		t.Fatalf("cookie count after reset = %d, want 0", afterReset.CookieCount)
+	}
+}
+
+func TestResetClearsDeviceProfileStateThroughControlAPI(t *testing.T) {
+	// A Device profile that does not seed Huawei cookies keeps the jar initially
+	// empty, so the state readout can show the cookie count fall all the way to zero.
+	upstreamSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/login":
+			w.Header().Set("Set-Cookie", "SessionID=stuck-session; Path=/")
+			w.Header().Set("Content-Type", "text/html")
+			_, _ = io.WriteString(w, "<html>login</html>")
+		case "/app.js":
+			w.Header().Set("Content-Type", "application/javascript")
+			w.Header().Set("Cache-Control", "public, max-age=3600")
+			_, _ = io.WriteString(w, "var app=1;")
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer upstreamSrv.Close()
+
+	srv := NewServer(Options{
+		InitialTarget:   upstreamSrv.URL,
+		InitialPresetID: "ilo",
+	})
+	proxyTS := httptest.NewServer(srv.ProxyHandler())
+	defer proxyTS.Close()
+	srv.SetProxyPort(proxyTS.Listener.Addr().(*net.TCPAddr).Port)
+	controlTS := httptest.NewServer(srv.ControlHandler())
+	defer controlTS.Close()
+	srv.SetControlPort(controlTS.Listener.Addr().(*net.TCPAddr).Port)
+
+	readState := func() StateSnapshot {
+		t.Helper()
+		res, err := http.Get(controlTS.URL + "/_bridge/api/state")
+		if err != nil {
+			t.Fatalf("GET state failed: %v", err)
+		}
+		defer res.Body.Close()
+		if res.StatusCode != http.StatusOK {
+			t.Fatalf("GET state status = %d, want 200", res.StatusCode)
+		}
+		var snap StateSnapshot
+		if err := json.NewDecoder(res.Body).Decode(&snap); err != nil {
+			t.Fatalf("decode state: %v", err)
+		}
+		return snap
+	}
+
+	// Drive real upstream traffic so the jar, static cache and telemetry all hold stale state.
+	for _, path := range []string{"/login", "/app.js"} {
+		res, err := http.Get(proxyTS.URL + path)
+		if err != nil {
+			t.Fatalf("GET %s through proxy failed: %v", path, err)
+		}
+		_ = res.Body.Close()
+		if res.StatusCode != http.StatusOK {
+			t.Fatalf("GET %s through proxy status = %d, want 200", path, res.StatusCode)
+		}
+	}
+
+	before := readState()
+	if before.CookieCount < 1 {
+		t.Fatalf("expected a saved session cookie before reset, got %+v", before)
+	}
+	if before.CachedAssets < 1 {
+		t.Fatalf("expected a cached asset before reset, got %+v", before)
+	}
+	if before.TLS.Transport != "Plain HTTP" {
+		t.Fatalf("expected live upstream transport telemetry before reset, got %+v", before.TLS)
+	}
+
+	req, err := http.NewRequest(http.MethodPost, controlTS.URL+"/_bridge/api/reset", strings.NewReader(""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Origin", controlTS.URL)
+	req.Header.Set("Sec-Fetch-Site", "same-origin")
+	resetRes, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("POST reset failed: %v", err)
+	}
+	_ = resetRes.Body.Close()
+	if resetRes.StatusCode != http.StatusOK {
+		t.Fatalf("POST reset status = %d, want 200", resetRes.StatusCode)
+	}
+	if got := resetRes.Header.Get("Clear-Site-Data"); got != `"cookies"` {
+		t.Fatalf("Clear-Site-Data = %q, want %q", got, `"cookies"`)
+	}
+	if got := strings.Join(resetRes.Header.Values("Set-Cookie"), "\n"); !strings.Contains(got, "SessionID=; Path=/; Max-Age=0") {
+		t.Fatalf("missing session cookie eviction header, got %q", got)
+	}
+
+	after := readState()
+	if after.CookieCount != 0 {
+		t.Fatalf("cookie count after reset = %d, want 0", after.CookieCount)
+	}
+	if after.CachedAssets != 0 {
+		t.Fatalf("cached asset count after reset = %d, want 0", after.CachedAssets)
+	}
+	if after.TLS.Transport != "Idle" {
+		t.Fatalf("transport after reset = %q, want Idle", after.TLS.Transport)
 	}
 }
 

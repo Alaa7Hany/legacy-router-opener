@@ -51,9 +51,8 @@ type cachedAsset struct {
 }
 
 func (s *Server) handleProxy(w http.ResponseWriter, r *http.Request) {
+	target, preset := s.profile.forwardState()
 	s.mu.RLock()
-	target := s.target
-	preset := s.preset
 	proxyPort := s.proxyPort
 	controlPort := s.controlPort
 	s.mu.RUnlock()
@@ -69,9 +68,7 @@ func (s *Server) handleProxy(w http.ResponseWriter, r *http.Request) {
 	canUseStaticCache := isStatic && !hasAuthorization
 	cacheKey := fmt.Sprintf("%s|%s|%s", target, effectiveProxyHost, targetPath)
 	if canUseStaticCache {
-		s.mu.RLock()
-		cached, hit := s.staticCache[cacheKey]
-		s.mu.RUnlock()
+		cached, hit := s.profile.cachedAsset(cacheKey)
 		if hit {
 			s.appendLog(fmt.Sprintf("[CACHE] %s (%dB)", upstream.RedactQuery(r.URL.Path), len(cached.body)))
 			w.Header().Set("Content-Type", cached.mimeType)
@@ -98,11 +95,11 @@ func (s *Server) handleProxy(w http.ResponseWriter, r *http.Request) {
 		reqBody = bodyBytes
 	}
 
-	jar := s.activeJar()
+	jar := s.profile.activeJar()
 	mergedCookies := jar.GetMergedCookieHeader(r.Header.Get("Cookie"))
 
 	s.appendLog(fmt.Sprintf("[FWD] -> %s%s", upstream.RedactQuery(target), safePath))
-	resp, usedEndpoint, err := s.client.SendRequest(r.Context(), target, preset, upstream.UpstreamRequest{
+	resp, usedEndpoint, err := s.profile.sendRequest(r.Context(), target, preset, upstream.UpstreamRequest{
 		Method:  r.Method,
 		Path:    targetPath,
 		Headers: r.Header,
@@ -152,11 +149,7 @@ func (s *Server) handleProxy(w http.ResponseWriter, r *http.Request) {
 	if cacheableStatic &&
 		len(finalBytes) > 0 &&
 		len(finalBytes) <= maxCachedAssetBytes {
-		s.mu.Lock()
-		if len(s.staticCache) < maxCachedAssets {
-			s.staticCache[cacheKey] = cachedAsset{mimeType: computedMime, body: finalBytes}
-		}
-		s.mu.Unlock()
+		s.profile.cacheAsset(cacheKey, cachedAsset{mimeType: computedMime, body: finalBytes})
 	}
 
 	outHeaders := w.Header()
