@@ -71,10 +71,9 @@ func startApp(options launchOptions) (*desktopApp, string, error) {
 	if err != nil {
 		return nil, "", err
 	}
-	identity := process.identity
 	launchURL := process.launchURL(options.openRouter)
-	if process.reused {
-		fmt.Printf("[INFO] Reusing Router Page Opener on port %d.\n", identity.proxyPort)
+	if process.reusedBridge() {
+		fmt.Printf("[INFO] Reusing Router Page Opener on port %d.\n", process.proxyPort())
 		return nil, launchURL, nil
 	}
 
@@ -84,17 +83,17 @@ func startApp(options launchOptions) (*desktopApp, string, error) {
 		target = detectedGateway
 	}
 	app := &desktopApp{process: process}
-	quit := newQuitHandler(identity.controlPort, process)
+	quit := newQuitHandler(process.controlPort(), process)
 	bridge := proxy.NewServer(proxy.Options{
-		ProxyPort:       identity.proxyPort,
-		ControlPort:     identity.controlPort,
-		RequestedPort:   identity.requestedPort,
+		ProxyPort:       process.proxyPort(),
+		ControlPort:     process.controlPort(),
+		RequestedPort:   process.requestedPort(),
 		InitialTarget:   target,
 		InitialPresetID: options.preset,
 		DetectedGateway: detectedGateway,
 		OnStdoutLog:     func(line string) { fmt.Println(line) },
 		QuitURL:         quitPath,
-		Stopping:        process.stopping,
+		Stopping:        process.streamStop(),
 	})
 	if initialTarget != "" {
 		if err := bridge.CheckTargetAllowed(initialTarget); err != nil {
@@ -104,8 +103,7 @@ func startApp(options launchOptions) (*desktopApp, string, error) {
 	}
 
 	controlHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/_bridge/events" && r.URL.Query().Get("opener") == "1" &&
-			r.Header.Get("Sec-Fetch-Site") == "same-origin" {
+		if isOpenerStream(w, r, process.controlPort()) {
 			endTab := process.registerOpener()
 			defer endTab()
 		}
@@ -124,17 +122,33 @@ func startApp(options launchOptions) (*desktopApp, string, error) {
 		Handler:           controlHandler,
 		ReadHeaderTimeout: 30 * time.Second,
 	}
-	for _, listener := range process.proxyListeners {
+	proxyBindings, controlBindings := process.listeners()
+	for _, listener := range proxyBindings {
 		go app.serve(app.proxy, listener)
 	}
-	for _, listener := range process.controlListeners {
+	for _, listener := range controlBindings {
 		go app.serve(app.control, listener)
 	}
 
 	snapshot := bridge.Snapshot()
-	fmt.Printf("Router Page Opener\nGateway: %s\nTarget: %s (%s)\nOpener Page: %s\nRouter Page: http://localhost:%d/\nPress Ctrl+C or use Quit app to stop.\n",
-		detectedGateway, snapshot.ResolvedTarget, upstream.FindPreset(snapshot.Preset).Name, process.openerURL(), identity.proxyPort)
+	fmt.Printf("Router Page Opener\nGateway: %s\nTarget: %s (%s)\nOpener Page: %s\nRouter Page: http://%s:%d/\nPress Ctrl+C or use Quit app to stop.\n",
+		detectedGateway, snapshot.ResolvedTarget, upstream.FindPreset(snapshot.Preset).Name, process.openerURL(), openerHost, process.proxyPort())
 	return app, launchURL, nil
+}
+
+// isOpenerStream reports whether r is the same-origin Opener event stream the
+// control origin will actually serve. The read guards live inside the control
+// plane, so the launch wrapper mirrors them here: a rejected stream must never
+// register a tab and schedule the four-second stop.
+func isOpenerStream(w http.ResponseWriter, r *http.Request, controlPort int) bool {
+	if r.URL.Path != "/_bridge/events" || r.Method != http.MethodGet ||
+		r.URL.Query().Get("opener") != "1" ||
+		r.Header.Get("Sec-Fetch-Site") != "same-origin" ||
+		!proxy.IsAllowedLoopbackHost(r.Host, controlPort) {
+		return false
+	}
+	_, ok := w.(http.Flusher)
+	return ok
 }
 
 func (app *desktopApp) serve(server *http.Server, listener net.Listener) {
@@ -144,10 +158,13 @@ func (app *desktopApp) serve(server *http.Server, listener net.Listener) {
 }
 
 func (app *desktopApp) shutdown() {
-	app.process.close()
+	// Ending the streams first lets Shutdown finish waiting on active requests.
+	app.process.endStreams()
 	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 	defer cancel()
 
+	// Shutdown closes every listener handed to Serve, so a normal stop makes
+	// Serve return http.ErrServerClosed rather than a spurious serve failure.
 	var group sync.WaitGroup
 	for _, server := range []*http.Server{app.proxy, app.control} {
 		group.Go(func() {
@@ -157,4 +174,13 @@ func (app *desktopApp) shutdown() {
 		})
 	}
 	group.Wait()
+	// Clean up only the bindings the servers did not close themselves.
+	app.process.closeBoundListeners()
+}
+
+// runResult is the launch result run returns for the next stop signal. run
+// binds its own listeners, so a test cannot close one through run; it uses
+// this to assert the exact error string a serve failure produces.
+func (app *desktopApp) runResult() error {
+	return stopError(<-app.process.stopSignal())
 }
