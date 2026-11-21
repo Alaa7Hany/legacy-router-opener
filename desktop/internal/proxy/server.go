@@ -39,7 +39,6 @@ type Server struct {
 	onStdoutLog     func(string)
 	quitURL         string
 	stopping        <-chan struct{}
-	watchOpenerTab  func() func()
 }
 
 // Options configures a new proxy Server instance.
@@ -53,7 +52,6 @@ type Options struct {
 	OnStdoutLog     func(string)
 	QuitURL         string
 	Stopping        <-chan struct{}
-	WatchOpenerTab  func() func()
 }
 
 // NewServer constructs a fully initialized proxy Server.
@@ -85,20 +83,9 @@ func NewServer(opts Options) *Server {
 		onStdoutLog:     opts.OnStdoutLog,
 		quitURL:         opts.QuitURL,
 		stopping:        opts.Stopping,
-		watchOpenerTab:  opts.WatchOpenerTab,
 	}
 	s.profile = newDeviceProfile(target, preset, port, opts.ControlPort, s.appendLog)
 	return s
-}
-
-// SetProxyPort updates the proxy listening port reported by the UI and URL rewriter.
-func (s *Server) SetProxyPort(port int) {
-	s.mu.Lock()
-	s.proxyPort = port
-	controlPort := s.controlPort
-	s.mu.Unlock()
-	s.profile.setBlockedLoopbackPorts(port, controlPort)
-	s.notifySubscribers()
 }
 
 // ProxyPort returns the bound proxy listening port.
@@ -108,27 +95,11 @@ func (s *Server) ProxyPort() int {
 	return s.proxyPort
 }
 
-// SetControlPort updates the control/opener listening port.
-func (s *Server) SetControlPort(port int) {
-	s.mu.Lock()
-	s.controlPort = port
-	proxyPort := s.proxyPort
-	s.mu.Unlock()
-	s.profile.setBlockedLoopbackPorts(proxyPort, port)
-}
-
 // ControlPort returns the bound control/opener listening port.
 func (s *Server) ControlPort() int {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.controlPort
-}
-
-// SetRequestedPort updates the original requested proxy port reported on ping responses.
-func (s *Server) SetRequestedPort(port int) {
-	s.mu.Lock()
-	s.requestedPort = port
-	s.mu.Unlock()
 }
 
 // RequestedPort returns the requested proxy port reported on ping responses.

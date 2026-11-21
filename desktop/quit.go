@@ -3,7 +3,6 @@ package main
 import (
 	"crypto/rand"
 	"crypto/subtle"
-	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -18,13 +17,11 @@ const quitPath = "/quit"
 type quitHandler struct {
 	controlPort int
 	token       string
-	stop        func()
-	watchTab    func() func()
-	stopping    <-chan struct{}
+	process     *bridgeProcess
 }
 
-func newQuitHandler(controlPort int, stop func()) *quitHandler {
-	return &quitHandler{controlPort: controlPort, token: rand.Text(), stop: stop}
+func newQuitHandler(controlPort int, process *bridgeProcess) *quitHandler {
+	return &quitHandler{controlPort: controlPort, token: rand.Text(), process: process}
 }
 
 func (q *quitHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -56,7 +53,7 @@ func (q *quitHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	language := bridgeui.SelectLanguage(r.URL.Query().Get("lang"), r.Header.Get("Accept-Language"))
-	openerURL := fmt.Sprintf("http://%s/_bridge?lang=%s", proxy.CanonicalLoopbackHost(r.Host), language)
+	openerURL := proxy.OpenerURL(r.Host, q.controlPort, "lang="+language)
 	switch r.Method {
 	case http.MethodGet:
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -80,7 +77,7 @@ func (q *quitHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		if err := bridgeui.WriteQuit(w, language, openerURL, ""); err == nil {
 			_ = http.NewResponseController(w).Flush()
-			q.stop()
+			q.process.stop(nil)
 		}
 	default:
 		w.Header().Set("Allow", "GET, POST")
@@ -89,7 +86,7 @@ func (q *quitHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func (q *quitHandler) watchConfirmation(w http.ResponseWriter, r *http.Request) {
-	if q.watchTab == nil || r.Method != http.MethodGet || r.Header.Get("Sec-Fetch-Site") != "same-origin" {
+	if q.process == nil || r.Method != http.MethodGet || r.Header.Get("Sec-Fetch-Site") != "same-origin" {
 		http.NotFound(w, r)
 		return
 	}
@@ -98,7 +95,7 @@ func (q *quitHandler) watchConfirmation(w http.ResponseWriter, r *http.Request) 
 		http.Error(w, "streaming unavailable", http.StatusInternalServerError)
 		return
 	}
-	endTab := q.watchTab()
+	endTab := q.process.registerOpener()
 	defer endTab()
 
 	w.Header().Set("Content-Type", "text/event-stream")
@@ -110,6 +107,6 @@ func (q *quitHandler) watchConfirmation(w http.ResponseWriter, r *http.Request) 
 	}
 	select {
 	case <-r.Context().Done():
-	case <-q.stopping:
+	case <-q.process.streamStop():
 	}
 }
