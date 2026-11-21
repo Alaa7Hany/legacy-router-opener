@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 )
@@ -37,13 +38,22 @@ type bridgeProcess struct {
 	controlListeners []net.Listener
 	reused           bool
 	tabs             *tabLifetime
+
+	// stopCh is the Bridge's single stop signal. A normal quit sends nil; a
+	// failed server sends the error. stopOnce makes the first reason win.
+	stopCh   chan error
+	stopOnce sync.Once
+
+	// stopping terminates both event streams so shutdown can finish.
+	stopping     chan struct{}
+	stoppingOnce sync.Once
 }
 
 // newBridgeProcess binds both local origins under the startup lock, probes for
 // an already-running Bridge and returns the identity the caller builds the
 // control plane from. When an existing Bridge answers, reused is true and this
 // process holds no listeners of its own.
-func newBridgeProcess(requestedPort int, startupTimeout time.Duration, requestStop func()) (*bridgeProcess, error) {
+func newBridgeProcess(requestedPort int, startupTimeout time.Duration) (*bridgeProcess, error) {
 	unlock, err := lockStartup(requestedPort)
 	if err != nil {
 		return nil, err
@@ -60,6 +70,8 @@ func newBridgeProcess(requestedPort int, startupTimeout time.Duration, requestSt
 			requestedPort: requestedPort,
 			openerHost:    "localhost",
 		},
+		stopCh:   make(chan error, 1),
+		stopping: make(chan struct{}),
 	}
 	if existing {
 		openerPort := existingControlPort
@@ -79,8 +91,19 @@ func newBridgeProcess(requestedPort int, startupTimeout time.Duration, requestSt
 	process.proxyListeners = listeners
 	process.controlListeners = controlListeners
 	process.identity.controlPort = controlPort
-	process.tabs = newTabLifetime(startupTimeout, requestStop)
+	process.tabs = newTabLifetime(startupTimeout, func() { process.stop(nil) })
 	return process, nil
+}
+
+// stop is the only way to request shutdown. The first caller wins: a user quit
+// and a last-tab close send no error, a failed server sends its error.
+func (p *bridgeProcess) stop(err error) {
+	p.stopOnce.Do(func() { p.stopCh <- err })
+}
+
+// stopSignal is the single channel the launch call selects on.
+func (p *bridgeProcess) stopSignal() <-chan error {
+	return p.stopCh
 }
 
 // openerURL is the canonical Opener address advertised on this Bridge.
@@ -116,11 +139,13 @@ func (p *bridgeProcess) registerOpener() func() {
 	return p.tabs.connect()
 }
 
-// close releases tab state and any listeners held before the servers took over.
+// close releases tab state, ends both event streams and any listeners held
+// before the servers took over. Ending the streams first lets shutdown finish.
 func (p *bridgeProcess) close() {
 	if p.tabs != nil {
 		p.tabs.close()
 	}
+	p.stoppingOnce.Do(func() { close(p.stopping) })
 	closeListeners(p.proxyListeners)
 	closeListeners(p.controlListeners)
 }

@@ -18,9 +18,6 @@ import (
 type desktopApp struct {
 	proxy, control *http.Server
 	process        *bridgeProcess
-	stopping       chan struct{}
-	quitRequested  chan struct{}
-	serveErrors    chan error
 }
 
 func run(ctx context.Context, options launchOptions) error {
@@ -42,11 +39,19 @@ func run(ctx context.Context, options launchOptions) error {
 
 	select {
 	case <-ctx.Done():
-	case <-app.quitRequested:
-	case err := <-app.serveErrors:
-		return fmt.Errorf("Router Page Opener stopped unexpectedly: %w", err)
+		return nil
+	case stopErr := <-app.process.stopSignal():
+		return stopError(stopErr)
 	}
-	return nil
+}
+
+// stopError maps the stop signal onto the launch result: a clean quit carries
+// no error, while a failed server is reported as an unexpected stop.
+func stopError(err error) error {
+	if err == nil {
+		return nil
+	}
+	return fmt.Errorf("Router Page Opener stopped unexpectedly: %w", err)
 }
 
 func startApp(options launchOptions) (*desktopApp, string, error) {
@@ -62,12 +67,7 @@ func startApp(options launchOptions) (*desktopApp, string, error) {
 	if !options.noBrowser && !options.openRouter {
 		startupTimeout = openerStartupTimeout
 	}
-	quitRequested := make(chan struct{})
-	requestStop := sync.OnceFunc(func() {
-		close(quitRequested)
-	})
-
-	process, err := newBridgeProcess(requestedPort, startupTimeout, requestStop)
+	process, err := newBridgeProcess(requestedPort, startupTimeout)
 	if err != nil {
 		return nil, "", err
 	}
@@ -83,15 +83,8 @@ func startApp(options launchOptions) (*desktopApp, string, error) {
 	if target == "" {
 		target = detectedGateway
 	}
-	app := &desktopApp{
-		process:       process,
-		stopping:      make(chan struct{}),
-		quitRequested: quitRequested,
-		serveErrors:   make(chan error, len(process.proxyListeners)+len(process.controlListeners)),
-	}
-	quit := newQuitHandler(identity.controlPort, requestStop)
-	quit.watchTab = process.registerOpener
-	quit.stopping = app.stopping
+	app := &desktopApp{process: process}
+	quit := newQuitHandler(identity.controlPort, process)
 	bridge := proxy.NewServer(proxy.Options{
 		ProxyPort:       identity.proxyPort,
 		ControlPort:     identity.controlPort,
@@ -101,7 +94,7 @@ func startApp(options launchOptions) (*desktopApp, string, error) {
 		DetectedGateway: detectedGateway,
 		OnStdoutLog:     func(line string) { fmt.Println(line) },
 		QuitURL:         quitPath,
-		Stopping:        app.stopping,
+		Stopping:        process.stopping,
 	})
 	if initialTarget != "" {
 		if err := bridge.CheckTargetAllowed(initialTarget); err != nil {
@@ -146,13 +139,12 @@ func startApp(options launchOptions) (*desktopApp, string, error) {
 
 func (app *desktopApp) serve(server *http.Server, listener net.Listener) {
 	if err := server.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
-		app.serveErrors <- err
+		app.process.stop(err)
 	}
 }
 
 func (app *desktopApp) shutdown() {
 	app.process.close()
-	close(app.stopping)
 	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 	defer cancel()
 
