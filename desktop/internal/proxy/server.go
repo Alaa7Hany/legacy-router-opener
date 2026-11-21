@@ -1,7 +1,6 @@
 package proxy
 
 import (
-	"context"
 	"fmt"
 	"strings"
 	"sync"
@@ -33,15 +32,11 @@ type Server struct {
 	proxyPort       int
 	controlPort     int
 	requestedPort   int
-	target          string
-	preset          upstream.HardwarePreset
+	profile         *deviceProfile
 	detectedGateway string
-	jars            map[string]*SessionCookieJar
-	staticCache     map[string]cachedAsset
 	logs            []string
 	sseSubscribers  map[chan struct{}]struct{}
 	onStdoutLog     func(string)
-	client          *upstream.Client
 	quitURL         string
 	stopping        <-chan struct{}
 	watchOpenerTab  func() func()
@@ -85,19 +80,14 @@ func NewServer(opts Options) *Server {
 		proxyPort:       port,
 		controlPort:     opts.ControlPort,
 		requestedPort:   opts.RequestedPort,
-		target:          target,
-		preset:          preset,
 		detectedGateway: gw,
-		jars:            make(map[string]*SessionCookieJar),
-		staticCache:     make(map[string]cachedAsset),
 		sseSubscribers:  make(map[chan struct{}]struct{}),
 		onStdoutLog:     opts.OnStdoutLog,
 		quitURL:         opts.QuitURL,
 		stopping:        opts.Stopping,
 		watchOpenerTab:  opts.WatchOpenerTab,
 	}
-	s.client = upstream.NewClient(preset.MaxConcurrentSockets, s.appendLog)
-	s.client.SetBlockedLoopbackPorts(port, opts.ControlPort)
+	s.profile = newDeviceProfile(target, preset, port, opts.ControlPort, s.appendLog)
 	return s
 }
 
@@ -107,7 +97,7 @@ func (s *Server) SetProxyPort(port int) {
 	s.proxyPort = port
 	controlPort := s.controlPort
 	s.mu.Unlock()
-	s.client.SetBlockedLoopbackPorts(port, controlPort)
+	s.profile.setBlockedLoopbackPorts(port, controlPort)
 	s.notifySubscribers()
 }
 
@@ -124,7 +114,7 @@ func (s *Server) SetControlPort(port int) {
 	s.controlPort = port
 	proxyPort := s.proxyPort
 	s.mu.Unlock()
-	s.client.SetBlockedLoopbackPorts(proxyPort, port)
+	s.profile.setBlockedLoopbackPorts(proxyPort, port)
 }
 
 // ControlPort returns the bound control/opener listening port.
@@ -150,87 +140,38 @@ func (s *Server) RequestedPort() int {
 
 // UpdateTarget switches the active target endpoint and preset at runtime.
 func (s *Server) UpdateTarget(rawTarget string, presetID string) error {
-	newEndpoint, err := upstream.ValidateTarget(rawTarget)
-	if err != nil {
-		return err
-	}
-	if err := s.client.CheckTargetAllowed(context.Background(), newEndpoint); err != nil {
-		return err
-	}
-	trimmed := strings.TrimSpace(rawTarget)
-
-	s.mu.Lock()
-	oldEndpoint := upstream.ParseEndpoint(s.target)
-	oldPresetID := s.preset.ID
-	if presetID != "" {
-		s.preset = upstream.FindPreset(presetID)
-	}
-	s.target = trimmed
-	if oldEndpoint.Host != newEndpoint.Host ||
-		oldEndpoint.Port != newEndpoint.Port ||
-		oldEndpoint.Scheme() != newEndpoint.Scheme() ||
-		oldPresetID != s.preset.ID {
-		s.staticCache = make(map[string]cachedAsset)
-	}
-	if jar, ok := s.jars[newEndpoint.BareHost()]; ok {
-		jar.SetSeedHuawei(s.preset.SeedHuaweiCookies)
-	}
-	maxSock := s.preset.MaxConcurrentSockets
-	presetName := s.preset.Name
-	s.mu.Unlock()
-
-	s.client.SetMaxSockets(maxSock)
-	s.appendLog(fmt.Sprintf("[TARGET] %s (Preset: %s, Max Sockets: %d)", newEndpoint.URL(), presetName, maxSock))
-	return nil
+	return s.profile.switchTo(rawTarget, presetID)
 }
 
 // CheckTargetAllowed reports whether rawTarget passes blocked loopback port checks.
 func (s *Server) CheckTargetAllowed(rawTarget string) error {
-	ep := upstream.ParseEndpoint(rawTarget)
-	return s.client.CheckTargetAllowed(context.Background(), ep)
+	return s.profile.checkTargetAllowed(rawTarget)
 }
 
 // Snapshot returns a thread-safe snapshot of current state, telemetry, and logs.
 func (s *Server) Snapshot() StateSnapshot {
 	s.mu.RLock()
 	port := s.proxyPort
-	target := s.target
-	preset := s.preset
 	gw := s.detectedGateway
-	cacheCount := len(s.staticCache)
 	logsCopy := append([]string(nil), s.logs...)
 	s.mu.RUnlock()
 
-	jar := s.activeJar()
-	cookieCount := len(jar.Snapshot())
-	endpoint := upstream.ParseEndpoint(target)
+	profile := s.profile.snapshot()
+	endpoint := upstream.ParseEndpoint(profile.Target)
 
 	return StateSnapshot{
 		ProxyPort:       port,
-		Target:          target,
+		Target:          profile.Target,
 		ResolvedTarget:  endpoint.URL(),
-		Preset:          preset.ID,
+		Preset:          profile.Preset.ID,
 		Presets:         upstream.BuiltinPresets,
 		DetectedGateway: gw,
-		MaxSockets:      s.client.MaxSockets(),
-		CachedAssets:    cacheCount,
-		CookieCount:     cookieCount,
-		TLS:             s.client.LastTLSInfo(),
+		MaxSockets:      profile.MaxSockets,
+		CachedAssets:    profile.CachedAssets,
+		CookieCount:     profile.CookieCount,
+		TLS:             profile.TLS,
 		Logs:            logsCopy,
 	}
-}
-
-func (s *Server) activeJar() *SessionCookieJar {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	hostKey := upstream.ParseEndpoint(s.target).BareHost()
-	jar, ok := s.jars[hostKey]
-	if !ok {
-		jar = NewSessionCookieJar(s.preset.SeedHuaweiCookies)
-		s.jars[hostKey] = jar
-	}
-	return jar
 }
 
 func (s *Server) appendLog(msg string) {
